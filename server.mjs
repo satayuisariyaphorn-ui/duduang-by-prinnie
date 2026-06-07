@@ -28,6 +28,7 @@ import { fileURLToPath } from 'url';
 
 import { processMotherScript, detectZodiac } from './scripts/agents/mom-script-agent.mjs';
 import { generateSceneVoices } from './scripts/agents/voice-agent.mjs';
+import { generateAllSceneImages } from './scripts/agents/image-agent.mjs';
 import { generateAllSceneVideos } from './scripts/agents/video-agent.mjs';
 import { generateSRT } from './scripts/agents/caption-agent.mjs';
 import { reviewScript } from './scripts/agents/qa-agent.mjs';
@@ -180,17 +181,21 @@ async function runMomPipeline(userId, scriptText, zodiac, contentType) {
     console.log(`  QA: ${qa.overall} (${qa.confidence}%)`);
 
     // Step 3: Voice generation
-    console.log(`  [3/5] Generating voice...`);
+    console.log(`  [3/6] Generating voice...`);
     const voiceFiles = await generateSceneVoices(script.scenes, workDir);
 
-    // Step 4: Video + Captions
-    console.log(`  [4/5] Generating video...`);
+    // Step 4: Image generation
+    console.log(`  [4/6] Generating images...`);
+    await generateAllSceneImages(script.scenes, workDir);
+
+    // Step 5: Video + Captions
+    console.log(`  [5/6] Generating video...`);
     const videoFiles = await generateAllSceneVideos(script.scenes, workDir);
     const srt = generateSRT(script.scenes);
     writeFileSync(join(workDir, 'captions.srt'), srt, 'utf-8');
 
-    // Step 5: Assembly
-    console.log(`  [5/5] Assembling final video...`);
+    // Step 6: Assembly
+    console.log(`  [6/6] Assembling final video...`);
     const finalPath = join(workDir, `${jobId}_final.mp4`);
     await assembleVideo({
       sceneVideos: videoFiles,
