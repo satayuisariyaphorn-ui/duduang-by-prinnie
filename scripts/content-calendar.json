@@ -1,0 +1,66 @@
+{
+  "topics": [
+    {
+      "topic_id": "daily_aries_2026_06_08",
+      "zodiac_sign": "Aries",
+      "content_type": "daily_horoscope",
+      "platform": "tiktok",
+      "duration": 45,
+      "mood": "mystical",
+      "hook_style": "question",
+      "cta": "เปิดแอป MU-VERSE รับเครดิตฟรี ดูดวงเฉพาะคุณ",
+      "status": "pending"
+    },
+    {
+      "topic_id": "love_taurus_2026_06_08",
+      "zodiac_sign": "Taurus",
+      "content_type": "love_reading",
+      "platform": "tiktok",
+      "duration": 35,
+      "mood": "romantic",
+      "hook_style": "revelation",
+      "cta": "อยากรู้เรื่องความรักแบบเจาะลึก กดลิงก์ในโปรไฟล์",
+      "status": "pending"
+    },
+    {
+      "topic_id": "money_gemini_2026_06_08",
+      "zodiac_sign": "Gemini",
+      "content_type": "money_reading",
+      "platform": "reels",
+      "duration": 35,
+      "mood": "empowering",
+      "hook_style": "warning",
+      "cta": "เช็กดวงการเงินเฉพาะวันเกิดคุณ โหลดแอป MU-VERSE",
+      "status": "pending"
+    },
+    {
+      "topic_id": "tarot_pick_a_card_2026_06_08",
+      "zodiac_sign": "all",
+      "content_type": "tarot_pick_a_card",
+      "platform": "tiktok",
+      "duration": 60,
+      "mood": "mystical",
+      "hook_style": "challenge",
+      "cta": "เปิดไพ่เฉพาะเรื่องของคุณในแอป MU-VERSE",
+      "status": "pending"
+    }
+  ],
+  "brand_voice": {
+    "tone": "อบอุ่น ลึกลับ ให้กำลังใจ ไม่ขู่ ไม่เคลม 100%",
+    "language": "th",
+    "forbidden_words": ["ซวย", "ตาย", "หายนะ", "แน่นอน100%", "การันตี"],
+    "safe_phrases": [
+      "มีสัญญาณให้ระวัง",
+      "ความสัมพันธ์อาจต้องคุยให้ชัด",
+      "พลังงานวันนี้เหมาะกับการทบทวนใจ",
+      "มีโอกาสเข้ามา ถ้าเปิดใจรับ"
+    ]
+  },
+  "hook_styles": {
+    "question": "เริ่มด้วยคำถามที่ทำให้คนหยุดดู",
+    "revelation": "เริ่มด้วยการเฉลยข้อมูลที่น่าตกใจ",
+    "warning": "เริ่มด้วยสัญญาณเตือนแบบไม่ขู่",
+    "challenge": "เริ่มด้วยการท้าให้ลอง",
+    "story": "เริ่มด้วยเรื่องเล่าสั้น"
+  }
+}

@@ -1,0 +1,26 @@
+{
+  "name": "duduang-by-prinnie",
+  "version": "1.0.0",
+  "description": "ดูดวง by Prinnie — AI Content Factory for astrology short-form video",
+  "type": "module",
+  "scripts": {
+    "content": "node --env-file=.env scripts/content-factory.mjs",
+    "content:list": "node scripts/content-factory.mjs --list",
+    "content:all": "node --env-file=.env scripts/content-factory.mjs --all",
+    "pipeline": "node --env-file=.env scripts/content-pipeline.mjs",
+    "pipeline:auto": "node --env-file=.env scripts/content-pipeline.mjs --skip-approve",
+    "batch": "node --env-file=.env scripts/batch-generate.mjs",
+    "batch:all": "node --env-file=.env scripts/batch-generate.mjs --type=daily_horoscope,love_reading,money_reading",
+    "review": "node scripts/review.mjs",
+    "review:open": "node scripts/review.mjs --open",
+    "bot": "node --env-file=.env server.mjs",
+    "dev": "node --env-file=.env server.mjs"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.80.0",
+    "@line/bot-sdk": "^11.0.1",
+    "express": "^5.2.1",
+    "ffmpeg-static": "^5.3.0",
+    "fluent-ffmpeg": "^2.1.3"
+  }
+}
