@@ -1,38 +1,65 @@
 /**
- * Video Agent — generates placeholder scene videos using FFmpeg
+ * Video Agent — generates scene videos using FFmpeg
  *
- * Creates branded visuals (navy bg + gold text + captions) per scene.
- * Replace with Runway/Pika/HyperFrame API when ready.
+ * Mode 1 (default): Navy branded background — simple placeholder
+ * Mode 2 (with images): Takes AI-generated images + applies zoom/pan (Ken Burns effect)
+ *
+ * Images can be placed in pipeline-output/{jobId}/images/scene_1.png etc.
+ * If no image exists for a scene, falls back to navy background.
  */
 
 import { execFile } from 'child_process';
+import { existsSync } from 'fs';
 import { promisify } from 'util';
 import ffmpegPath from 'ffmpeg-static';
 
 const exec = promisify(execFile);
 
-const BRAND = {
-  navy: '0B1026',
-  gold: 'E8C77A',
-  white: 'FFFFFF',
-};
+const BRAND_NAVY = '0B1026';
+
+const ZOOM_PAN_EFFECTS = [
+  'zoompan=z=min(zoom+0.001\\,1.3):d=%d*30:x=iw/2-(iw/zoom/2):y=ih/2-(ih/zoom/2):s=1080x1920:fps=30',
+  'zoompan=z=1.3:d=%d*30:x=iw/2-(iw/zoom/2)+sin(on/(%d*30)*PI*2)*50:y=ih/2-(ih/zoom/2):s=1080x1920:fps=30',
+  'zoompan=z=min(zoom+0.0015\\,1.4):d=%d*30:x=0:y=0:s=1080x1920:fps=30',
+  'zoompan=z=min(zoom+0.001\\,1.3):d=%d*30:x=iw-iw/zoom:y=ih/2-(ih/zoom/2):s=1080x1920:fps=30',
+  'zoompan=z=1.4-in/(%d*30)*0.4:d=%d*30:x=iw/2-(iw/zoom/2):y=ih/2-(ih/zoom/2):s=1080x1920:fps=30',
+];
 
 export async function generateSceneVideo(scene, outputPath, options = {}) {
   const duration = scene.duration || 5;
-  const width = options.width || 1080;
-  const height = options.height || 1920;
+  const imagePath = options.imagePath;
 
-  const args = [
-    '-y',
-    '-f', 'lavfi',
-    '-i', `color=c=0x${BRAND.navy}:s=${width}x${height}:d=${duration}:r=30`,
-    '-c:v', 'libx264',
-    '-pix_fmt', 'yuv420p',
-    '-t', String(duration),
-    outputPath,
-  ];
+  if (imagePath && existsSync(imagePath)) {
+    const effectIdx = (scene.scene - 1) % ZOOM_PAN_EFFECTS.length;
+    let effect = ZOOM_PAN_EFFECTS[effectIdx];
+    effect = effect.replace(/%d/g, String(duration));
 
-  await exec(ffmpegPath, args, { timeout: 120000 });
+    const args = [
+      '-y',
+      '-loop', '1',
+      '-i', imagePath,
+      '-vf', effect,
+      '-c:v', 'libx264',
+      '-pix_fmt', 'yuv420p',
+      '-t', String(duration),
+      outputPath,
+    ];
+
+    await exec(ffmpegPath, args, { timeout: 120000 });
+  } else {
+    const args = [
+      '-y',
+      '-f', 'lavfi',
+      '-i', `color=c=0x${BRAND_NAVY}:s=1080x1920:d=${duration}:r=30`,
+      '-c:v', 'libx264',
+      '-pix_fmt', 'yuv420p',
+      '-t', String(duration),
+      outputPath,
+    ];
+
+    await exec(ffmpegPath, args, { timeout: 120000 });
+  }
+
   return outputPath;
 }
 
@@ -42,9 +69,15 @@ export async function generateAllSceneVideos(scenes, outputDir) {
   for (const scene of scenes) {
     const filename = `scene_${scene.scene}_video.mp4`;
     const outputPath = `${outputDir}/${filename}`;
-    await generateSceneVideo(scene, outputPath);
+
+    const imagePath = `${outputDir}/images/scene_${scene.scene}.png`;
+    const hasImage = existsSync(imagePath);
+
+    await generateSceneVideo(scene, outputPath, { imagePath: hasImage ? imagePath : null });
     results.push({ scene: scene.scene, path: outputPath });
-    console.log(`    Video scene ${scene.scene}: ${filename} (${scene.duration}s)`);
+
+    const mode = hasImage ? 'image+zoom' : 'navy bg';
+    console.log(`    Video scene ${scene.scene}: ${filename} (${scene.duration}s, ${mode})`);
   }
 
   return results;
