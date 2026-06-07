@@ -12,7 +12,7 @@ import { promisify } from 'util';
 const exec = promisify(execFile);
 
 const ELEVENLABS_KEY = process.env.ELEVENLABS_API_KEY;
-const ELEVENLABS_VOICE = process.env.ELEVENLABS_VOICE_ID || '8eNH5E5PK5o9E5l2mGYe';
+const ELEVENLABS_VOICE = process.env.ELEVENLABS_VOICE_ID || 'QMuBA8znImWXFn2HqfTp';
 
 async function generateVoiceElevenLabs(text, outputPath) {
   const res = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${ELEVENLABS_VOICE}`, {
