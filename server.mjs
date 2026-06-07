@@ -427,18 +427,14 @@ app.get('/debug/test-anthropic', async (req, res) => {
 });
 
 app.get('/debug/env', (req, res) => {
-  const ak = process.env.ANTHROPIC_API_KEY || '';
   res.json({
-    anthropicKeyLength: ak.length,
-    anthropicKeyStart: ak.slice(0, 15),
-    anthropicKeyEnd: ak.slice(-8),
-    hasLineSecret: !!LINE_SECRET,
-    hasLineToken: !!LINE_TOKEN,
-    lineTokenLength: LINE_TOKEN?.length || 0,
-    lineTokenStart: LINE_TOKEN?.slice(0, 10) || '',
-    lineTokenEnd: LINE_TOKEN?.slice(-10) || '',
-    rawTokenLength: process.env.LINE_CHANNEL_ACCESS_TOKEN?.length || 0,
-    adminUsers: ADMIN_USER_IDS.length,
+    anthropic: !!process.env.ANTHROPIC_API_KEY,
+    elevenlabs: !!process.env.ELEVENLABS_API_KEY,
+    elevenlabsVoice: process.env.ELEVENLABS_VOICE_ID || 'default',
+    fal: !!process.env.FAL_API_KEY,
+    lineSecret: !!LINE_SECRET,
+    lineToken: LINE_TOKEN?.length || 0,
+    railwayDomain: process.env.RAILWAY_PUBLIC_DOMAIN || 'not set',
   });
 });
 
