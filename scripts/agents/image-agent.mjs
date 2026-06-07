@@ -47,6 +47,8 @@ export async function generateSceneImage(scene, outputPath) {
   return outputPath;
 }
 
+const MAX_IMAGES = parseInt(process.env.MAX_IMAGES || '2');
+
 export async function generateAllSceneImages(scenes, outputDir) {
   if (!FAL_KEY) {
     console.log('    No FAL_API_KEY — skipping image generation');
@@ -56,8 +58,11 @@ export async function generateAllSceneImages(scenes, outputDir) {
   const imagesDir = `${outputDir}/images`;
   mkdirSync(imagesDir, { recursive: true });
 
+  const pickedScenes = pickBestScenes(scenes, MAX_IMAGES);
+  console.log(`    Generating ${pickedScenes.length} images (scenes ${pickedScenes.map(s => s.scene).join(', ')})`);
+
   const results = [];
-  for (const scene of scenes) {
+  for (const scene of pickedScenes) {
     const filename = `scene_${scene.scene}.png`;
     const outputPath = `${imagesDir}/${filename}`;
 
@@ -71,4 +76,23 @@ export async function generateAllSceneImages(scenes, outputDir) {
   }
 
   return results;
+}
+
+function pickBestScenes(scenes, max) {
+  if (scenes.length <= max) return scenes;
+  const hook = scenes.find(s => s.type === 'hook');
+  const content = scenes.filter(s => s.type === 'content');
+  const picked = [];
+  if (hook) picked.push(hook);
+  for (const s of content) {
+    if (picked.length >= max) break;
+    picked.push(s);
+  }
+  if (picked.length < max) {
+    for (const s of scenes) {
+      if (picked.length >= max) break;
+      if (!picked.includes(s)) picked.push(s);
+    }
+  }
+  return picked.sort((a, b) => a.scene - b.scene);
 }
