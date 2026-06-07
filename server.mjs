@@ -240,14 +240,19 @@ app.post('/webhook', express.raw({ type: '*/*' }), async (req, res) => {
   }
 
   for (const event of events) {
-    if (event.type !== 'message' || event.message.type !== 'text') continue;
+   try {
+    if (event.type !== 'message' || event.message?.type !== 'text') {
+      console.log(`[WEBHOOK] Skipping event type: ${event.type}/${event.message?.type}`);
+      continue;
+    }
 
-    const userId = event.source.userId;
+    const userId = event.source?.userId;
     const text = event.message.text.trim();
     const replyToken = event.replyToken;
 
     console.log(`[MSG] User: ${userId}`);
-    console.log(`[MSG] Text: ${text.slice(0, 80)}...`);
+    console.log(`[MSG] Text: ${text.slice(0, 80)}`);
+    console.log(`[MSG] ReplyToken: ${replyToken?.slice(0, 20)}...`);
 
     // Check if user is authorized (if admin list is set)
     if (ADMIN_USER_IDS.length > 0 && !ADMIN_USER_IDS.includes(userId)) {
@@ -349,7 +354,36 @@ ${result.script.hashtags?.join(' ')}`,
         text: `ขออภัยค่ะ สร้างคลิปไม่สำเร็จ: ${result.error}\n\nลองส่งใหม่อีกครั้งนะคะ`,
       }]);
     }
+   } catch (err) {
+    console.error(`[ERROR] Event processing failed: ${err.message}`);
+    console.error(err.stack);
+   }
   }
+});
+
+// ─── Debug endpoint ─────────────────────────────────────────────────────────────
+
+app.get('/debug/test-reply', async (req, res) => {
+  const testUserId = req.query.uid;
+  if (!testUserId) {
+    return res.json({ error: 'Add ?uid=USER_ID to test push message' });
+  }
+  try {
+    await pushMessage(testUserId, [{ type: 'text', text: 'ทดสอบ Bot สำเร็จค่ะ!' }]);
+    res.json({ status: 'sent', to: testUserId });
+  } catch (err) {
+    res.json({ status: 'error', message: err.message });
+  }
+});
+
+app.get('/debug/env', (req, res) => {
+  res.json({
+    hasAnthropicKey: !!process.env.ANTHROPIC_API_KEY,
+    hasLineSecret: !!LINE_SECRET,
+    hasLineToken: !!LINE_TOKEN,
+    lineTokenLength: LINE_TOKEN?.length || 0,
+    adminUsers: ADMIN_USER_IDS.length,
+  });
 });
 
 // ─── Dev Mode: test via HTTP POST ───────────────────────────────────────────────
