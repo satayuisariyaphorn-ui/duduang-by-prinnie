@@ -41,9 +41,17 @@ const app = express();
 const PORT = process.env.PORT || 3001;
 
 const LINE_SECRET = process.env.LINE_CHANNEL_SECRET;
-const LINE_TOKEN = process.env.LINE_CHANNEL_ACCESS_TOKEN_B64
-  ? Buffer.from(process.env.LINE_CHANNEL_ACCESS_TOKEN_B64, 'base64').toString('utf-8')
-  : process.env.LINE_CHANNEL_ACCESS_TOKEN;
+function resolveLineToken() {
+  const b64 = process.env.LINE_CHANNEL_ACCESS_TOKEN_B64;
+  if (b64) return Buffer.from(b64, 'base64').toString('utf-8');
+  const raw = process.env.LINE_CHANNEL_ACCESS_TOKEN || '';
+  if (raw.length > 170) return raw;
+  if (raw.length > 100 && raw.endsWith('=')) {
+    try { return Buffer.from(raw, 'base64').toString('utf-8'); } catch {}
+  }
+  return raw;
+}
+const LINE_TOKEN = resolveLineToken();
 const ADMIN_USER_IDS = (process.env.LINE_ADMIN_USERS || '').split(',').filter(Boolean);
 
 // ─── LINE Signature Verification ────────────────────────────────────────────────
