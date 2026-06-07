@@ -388,6 +388,28 @@ app.get('/debug/test-reply', async (req, res) => {
   }
 });
 
+app.get('/debug/test-anthropic', async (req, res) => {
+  try {
+    const resp = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': process.env.ANTHROPIC_API_KEY,
+        'anthropic-version': '2023-06-01',
+      },
+      body: JSON.stringify({
+        model: 'claude-haiku-4-5-20251001',
+        max_tokens: 5,
+        messages: [{ role: 'user', content: 'hi' }],
+      }),
+    });
+    const data = await resp.text();
+    res.json({ status: resp.status, response: data.slice(0, 200) });
+  } catch (err) {
+    res.json({ status: 'error', message: err.message });
+  }
+});
+
 app.get('/debug/env', (req, res) => {
   const ak = process.env.ANTHROPIC_API_KEY || '';
   res.json({
