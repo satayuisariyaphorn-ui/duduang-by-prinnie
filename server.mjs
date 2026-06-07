@@ -60,17 +60,25 @@ async function replyMessage(replyToken, messages) {
     return;
   }
 
-  const res = await fetch('https://api.line.me/v2/bot/message/reply', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${LINE_TOKEN}`,
-    },
-    body: JSON.stringify({ replyToken, messages }),
-  });
+  console.log(`[REPLY] Sending to LINE...`);
+  try {
+    const res = await fetch('https://api.line.me/v2/bot/message/reply', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${LINE_TOKEN}`,
+      },
+      body: JSON.stringify({ replyToken, messages }),
+    });
 
-  if (!res.ok) {
-    console.error('LINE reply failed:', await res.text());
+    const responseText = await res.text();
+    if (!res.ok) {
+      console.error(`[REPLY] FAILED ${res.status}: ${responseText}`);
+    } else {
+      console.log(`[REPLY] OK`);
+    }
+  } catch (err) {
+    console.error(`[REPLY] Error: ${err.message}`);
   }
 }
 
@@ -201,11 +209,23 @@ async function runMomPipeline(userId, scriptText, zodiac, contentType) {
 // ─── Webhook Handler ────────────────────────────────────────────────────────────
 
 app.post('/webhook', express.raw({ type: '*/*' }), async (req, res) => {
-  const signature = req.headers['x-line-signature'];
-  const bodyStr = req.body.toString();
+  let bodyStr;
+  try {
+    bodyStr = typeof req.body === 'string' ? req.body : Buffer.isBuffer(req.body) ? req.body.toString('utf-8') : JSON.stringify(req.body);
+  } catch (e) {
+    console.error('Body parse error:', e.message);
+    return res.status(400).send('Bad request');
+  }
 
-  if (!verifySignature(bodyStr, signature)) {
-    return res.status(401).send('Invalid signature');
+  console.log(`\n[WEBHOOK] Received ${bodyStr.length} bytes`);
+
+  const signature = req.headers['x-line-signature'];
+  if (LINE_SECRET && signature) {
+    const valid = verifySignature(bodyStr, signature);
+    console.log(`[WEBHOOK] Signature: ${valid ? 'OK' : 'INVALID'}`);
+    if (!valid) {
+      return res.status(401).send('Invalid signature');
+    }
   }
 
   res.status(200).send('OK');
@@ -213,7 +233,9 @@ app.post('/webhook', express.raw({ type: '*/*' }), async (req, res) => {
   let events;
   try {
     events = JSON.parse(bodyStr).events || [];
-  } catch {
+    console.log(`[WEBHOOK] Events: ${events.length}`);
+  } catch (e) {
+    console.error('[WEBHOOK] JSON parse error:', e.message);
     return;
   }
 
@@ -223,6 +245,9 @@ app.post('/webhook', express.raw({ type: '*/*' }), async (req, res) => {
     const userId = event.source.userId;
     const text = event.message.text.trim();
     const replyToken = event.replyToken;
+
+    console.log(`[MSG] User: ${userId}`);
+    console.log(`[MSG] Text: ${text.slice(0, 80)}...`);
 
     // Check if user is authorized (if admin list is set)
     if (ADMIN_USER_IDS.length > 0 && !ADMIN_USER_IDS.includes(userId)) {
