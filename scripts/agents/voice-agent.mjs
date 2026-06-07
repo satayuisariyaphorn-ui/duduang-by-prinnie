@@ -24,7 +24,8 @@ async function generateVoiceElevenLabs(text, outputPath) {
     body: JSON.stringify({
       text,
       model_id: 'eleven_multilingual_v2',
-      voice_settings: { stability: 0.5, similarity_boost: 0.75 },
+      language_code: 'th',
+      voice_settings: { stability: 0.75, similarity_boost: 0.85, style: 0.1 },
     }),
   });
 

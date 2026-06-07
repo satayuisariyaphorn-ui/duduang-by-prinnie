@@ -66,13 +66,25 @@ export async function generateSceneVideo(scene, outputPath, options = {}) {
 export async function generateAllSceneVideos(scenes, outputDir) {
   const results = [];
 
+  const availableImages = [];
+  for (const scene of scenes) {
+    const imgPath = `${outputDir}/images/scene_${scene.scene}.png`;
+    if (existsSync(imgPath)) availableImages.push({ scene: scene.scene, path: imgPath });
+  }
+
   for (const scene of scenes) {
     const filename = `scene_${scene.scene}_video.mp4`;
     const outputPath = `${outputDir}/${filename}`;
 
-    const imagePath = `${outputDir}/images/scene_${scene.scene}.png`;
-    const hasImage = existsSync(imagePath);
+    let imagePath = `${outputDir}/images/scene_${scene.scene}.png`;
+    if (!existsSync(imagePath) && availableImages.length > 0) {
+      const nearest = availableImages.reduce((best, img) =>
+        Math.abs(img.scene - scene.scene) < Math.abs(best.scene - scene.scene) ? img : best
+      );
+      imagePath = nearest.path;
+    }
 
+    const hasImage = existsSync(imagePath);
     await generateSceneVideo(scene, outputPath, { imagePath: hasImage ? imagePath : null });
     results.push({ scene: scene.scene, path: outputPath });
 
