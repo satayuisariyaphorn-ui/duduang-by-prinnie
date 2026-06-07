@@ -384,6 +384,11 @@ app.get('/debug/env', (req, res) => {
     hasLineSecret: !!LINE_SECRET,
     hasLineToken: !!LINE_TOKEN,
     lineTokenLength: LINE_TOKEN?.length || 0,
+    lineTokenStart: LINE_TOKEN?.slice(0, 10) || '',
+    lineTokenEnd: LINE_TOKEN?.slice(-10) || '',
+    hasB64: !!process.env.LINE_CHANNEL_ACCESS_TOKEN_B64,
+    b64Length: process.env.LINE_CHANNEL_ACCESS_TOKEN_B64?.length || 0,
+    rawTokenLength: process.env.LINE_CHANNEL_ACCESS_TOKEN?.length || 0,
     adminUsers: ADMIN_USER_IDS.length,
   });
 });
