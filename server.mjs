@@ -39,6 +39,11 @@ const JOBS_DIR = join(__dirname, 'jobs');
 
 const app = express();
 const PORT = process.env.PORT || 3001;
+const BASE_URL = process.env.RAILWAY_PUBLIC_DOMAIN
+  ? `https://${process.env.RAILWAY_PUBLIC_DOMAIN}`
+  : `http://localhost:${PORT}`;
+
+app.use('/clips', express.static(join(__dirname, 'scripts', 'pipeline-output')));
 
 const LINE_SECRET = process.env.LINE_CHANNEL_SECRET;
 function resolveLineToken() {
@@ -345,14 +350,20 @@ app.post('/webhook', express.raw({ type: '*/*' }), async (req, res) => {
 
     if (result.success) {
       console.log(`  DONE: ${result.jobId}`);
+      const clipUrl = `${BASE_URL}/clips/${result.jobId}/${result.jobId}_final.mp4`;
+      const qaStatus = result.qa.overall === 'APPROVE'
+        ? `QA: ผ่าน (${result.qa.confidence}%)`
+        : `QA: ${result.qa.overall} (${result.qa.confidence}%) — ควรตรวจสอบก่อนโพสต์`;
+
       await pushMessage(userId, [{
         type: 'text',
         text: `คลิปพร้อมแล้วค่ะ!
 
 ราศี: ${zodiacLabel}
-QA: ${result.qa.overall} (${result.qa.confidence}%)
+${qaStatus}
 
-คลิปอยู่ที่: ${result.finalPath}
+ดาวน์โหลดคลิป:
+${clipUrl}
 
 Caption:
 ${result.script.caption}
@@ -470,8 +481,9 @@ app.listen(PORT, () => {
   console.log('╚══════════════════════════════════════════════════════════════╝');
   console.log(`  Port:     ${PORT}`);
   console.log(`  LINE:     ${LINE_TOKEN ? 'configured' : 'DEV MODE (no LINE token)'}`);
-  console.log(`  Webhook:  http://localhost:${PORT}/webhook`);
-  console.log(`  API:      http://localhost:${PORT}/api/generate`);
+  console.log(`  Base URL: ${BASE_URL}`);
+  console.log(`  Webhook:  ${BASE_URL}/webhook`);
+  console.log(`  Clips:    ${BASE_URL}/clips/`);
   console.log(`  Admins:   ${ADMIN_USER_IDS.length > 0 ? ADMIN_USER_IDS.join(', ') : 'all users'}`);
   console.log('');
 });
