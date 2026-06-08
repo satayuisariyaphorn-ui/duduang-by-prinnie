@@ -1,81 +1,52 @@
 /**
- * Voice Agent — generates Thai voiceover audio
+ * Voice Agent — generates Thai voiceover using MiniMax TTS via FAL.ai
  *
- * Uses ElevenLabs (mom's cloned voice) if API key is set,
- * falls back to Edge TTS (free) otherwise.
+ * Uses mom's cloned voice (MiniMax voice clone)
+ * Falls back to default MiniMax Thai voice if no voice_id set
  */
 
-import { execFile, execSync } from 'child_process';
-import { existsSync, writeFileSync } from 'fs';
-import { promisify } from 'util';
+import { writeFileSync, existsSync } from 'fs';
 
-const exec = promisify(execFile);
+const FAL_KEY = process.env.FAL_API_KEY;
+const MINIMAX_VOICE_ID = process.env.MINIMAX_VOICE_ID || 'Voiceeffe72d71780906562';
 
-const ELEVENLABS_KEY = process.env.ELEVENLABS_API_KEY;
-const ELEVENLABS_VOICE = process.env.ELEVENLABS_VOICE_ID || 'QMuBA8znImWXFn2HqfTp';
+async function generateVoiceMiniMax(text, outputPath) {
+  if (!FAL_KEY) throw new Error('Missing FAL_API_KEY');
 
-async function generateVoiceElevenLabs(text, outputPath) {
-  const res = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${ELEVENLABS_VOICE}`, {
+  const body = {
+    text,
+    language: 'th',
+  };
+  if (MINIMAX_VOICE_ID) body.voice_id = MINIMAX_VOICE_ID;
+
+  const res = await fetch('https://fal.run/fal-ai/minimax/speech-02-hd', {
     method: 'POST',
     headers: {
-      'xi-api-key': ELEVENLABS_KEY,
+      'Authorization': `Key ${FAL_KEY}`,
       'Content-Type': 'application/json',
     },
-    body: JSON.stringify({
-      text,
-      model_id: 'eleven_multilingual_v2',
-      voice_settings: { stability: 0.75, similarity_boost: 0.85, style: 0.1 },
-    }),
+    body: JSON.stringify(body),
   });
 
   if (!res.ok) {
     const err = await res.text();
-    throw new Error(`ElevenLabs ${res.status}: ${err.slice(0, 200)}`);
+    throw new Error(`MiniMax TTS ${res.status}: ${err.slice(0, 200)}`);
   }
 
-  const buffer = Buffer.from(await res.arrayBuffer());
+  const data = await res.json();
+  const audioUrl = data.audio?.url;
+  if (!audioUrl) throw new Error('No audio URL in MiniMax response');
+
+  const audioRes = await fetch(audioUrl);
+  if (!audioRes.ok) throw new Error(`Failed to download audio: ${audioRes.status}`);
+
+  const buffer = Buffer.from(await audioRes.arrayBuffer());
   writeFileSync(outputPath, buffer);
   return outputPath;
 }
 
-function findEdgeTts() {
-  const candidates = [
-    process.env.EDGE_TTS_BIN,
-    '/Users/bon/Library/Python/3.9/bin/edge-tts',
-    '/usr/local/bin/edge-tts',
-    '/usr/bin/edge-tts',
-  ].filter(Boolean);
-  for (const p of candidates) {
-    if (existsSync(p)) return p;
-  }
-  try {
-    return execSync('which edge-tts', { encoding: 'utf-8' }).trim();
-  } catch {
-    return null;
-  }
-}
-
-async function generateVoiceEdgeTTS(text, outputPath) {
-  const bin = findEdgeTts();
-  if (!bin) throw new Error('No TTS engine available. Set ELEVENLABS_API_KEY or install edge-tts.');
-
-  await exec(bin, [
-    '--text', text,
-    '--voice', 'th-TH-PremwadeeNeural',
-    '--rate=-12%',
-    '--pitch=-2Hz',
-    '--write-media', outputPath,
-  ], { timeout: 60000 });
-
-  return outputPath;
-}
-
 export async function generateVoice(text, outputPath, options = {}) {
-  if (ELEVENLABS_KEY) {
-    await generateVoiceElevenLabs(text, outputPath);
-  } else {
-    await generateVoiceEdgeTTS(text, outputPath);
-  }
+  await generateVoiceMiniMax(text, outputPath);
 
   if (!existsSync(outputPath)) {
     throw new Error(`Voice file not created: ${outputPath}`);
@@ -84,8 +55,7 @@ export async function generateVoice(text, outputPath, options = {}) {
 }
 
 export async function generateSceneVoices(scenes, outputDir, options = {}) {
-  const engine = ELEVENLABS_KEY ? 'ElevenLabs' : 'Edge TTS';
-  console.log(`    Engine: ${engine}`);
+  console.log(`    Engine: MiniMax Speech-02-HD (voice: ${MINIMAX_VOICE_ID || 'default'})`);
 
   const results = [];
   for (const scene of scenes) {
