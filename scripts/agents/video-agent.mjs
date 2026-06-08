@@ -9,13 +9,17 @@
  */
 
 import { execFile } from 'child_process';
-import { existsSync } from 'fs';
+import { existsSync, readdirSync } from 'fs';
 import { promisify } from 'util';
+import { dirname, join } from 'path';
+import { fileURLToPath } from 'url';
 import ffmpegPath from 'ffmpeg-static';
 
 const exec = promisify(execFile);
+const __dirname = dirname(fileURLToPath(import.meta.url));
 
 const BRAND_NAVY = '0B1026';
+const BACKGROUNDS_DIR = join(__dirname, '..', '..', 'assets', 'backgrounds');
 
 const ZOOM_PAN_EFFECTS = [
   'zoompan=z=min(zoom+0.001\\,1.3):d=%d*30:x=iw/2-(iw/zoom/2):y=ih/2-(ih/zoom/2):s=1080x1920:fps=30',
@@ -63,6 +67,13 @@ export async function generateSceneVideo(scene, outputPath, options = {}) {
   return outputPath;
 }
 
+function pickStockBackground(sceneIndex) {
+  if (!existsSync(BACKGROUNDS_DIR)) return null;
+  const files = readdirSync(BACKGROUNDS_DIR).filter(f => /\.(jpg|jpeg|png)$/i.test(f)).sort();
+  if (files.length === 0) return null;
+  return join(BACKGROUNDS_DIR, files[sceneIndex % files.length]);
+}
+
 export async function generateAllSceneVideos(scenes, outputDir) {
   const results = [];
 
@@ -84,7 +95,17 @@ export async function generateAllSceneVideos(scenes, outputDir) {
       imagePath = nearest.path;
     }
 
-    const hasImage = existsSync(imagePath);
+    let hasImage = existsSync(imagePath);
+
+    // Fallback to stock backgrounds if no AI-generated image
+    if (!hasImage) {
+      const stock = pickStockBackground(scene.scene - 1);
+      if (stock) {
+        imagePath = stock;
+        hasImage = true;
+      }
+    }
+
     await generateSceneVideo(scene, outputPath, { imagePath: hasImage ? imagePath : null });
     results.push({ scene: scene.scene, path: outputPath });
 

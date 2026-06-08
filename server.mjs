@@ -119,6 +119,16 @@ async function pushMessage(userId, messages) {
   });
 }
 
+// ─── Stock Background Picker ────────────────────────────────────────────────────
+
+function pickBackground(bgDir, sceneIndex) {
+  if (!existsSync(bgDir)) return null;
+  const files = readdirSync(bgDir).filter(f => /\.(jpg|jpeg|png)$/i.test(f)).sort();
+  if (files.length === 0) return null;
+  const idx = sceneIndex % files.length;
+  return join(bgDir, files[idx]);
+}
+
 // ─── Upload + Send Clip ─────────────────────────────────────────────────────────
 
 async function uploadToFal(filePath, mimeType) {
@@ -260,19 +270,13 @@ async function runTextVoicePipeline(userId, scriptText, audioBuffer, messageId) 
     });
     writeFileSync(join(workDir, 'script.json'), JSON.stringify(script, null, 2));
 
-    // Step 3: Generate 2 images from visual prompts
-    console.log(`  [3/4] Generating images...`);
-    const { generateSceneImage } = await import('./scripts/agents/image-agent.mjs');
-    const imagesDir = join(workDir, 'images');
-    mkdirSync(imagesDir, { recursive: true });
-
-    const prompt1 = script.scenes?.[0]?.visual_prompt || 'mystical zodiac wheel golden aspect lines navy background';
-    const prompt2 = script.scenes?.[1]?.visual_prompt || 'celestial tarot cosmic constellation navy gold';
-    const img1 = join(imagesDir, 'img_1.png');
-    const img2 = join(imagesDir, 'img_2.png');
-
-    try { await generateSceneImage({ visual_prompt: prompt1, scene: 1 }, img1); console.log(`  Image 1: OK`); } catch (e) { console.log(`  Image 1: FAILED`); }
-    try { await generateSceneImage({ visual_prompt: prompt2, scene: 2 }, img2); console.log(`  Image 2: OK`); } catch (e) { console.log(`  Image 2: FAILED`); }
+    // Step 3: Pick background images (stock art with pan/zoom > AI-generated)
+    console.log(`  [3/4] Selecting background images...`);
+    const bgDir = join(__dirname, 'assets', 'backgrounds');
+    const img1 = pickBackground(bgDir, 0);
+    const img2 = pickBackground(bgDir, 1);
+    console.log(`  BG 1: ${img1}`);
+    console.log(`  BG 2: ${img2}`);
 
     // Step 4: Build video with pan/zoom (Ken Burns effect)
     console.log(`  [4/4] Building video with pan/zoom...`);
@@ -281,9 +285,9 @@ async function runTextVoicePipeline(userId, scriptText, audioBuffer, messageId) 
 
     const vid1 = join(workDir, 'vid1.mp4');
     const vid2 = join(workDir, 'vid2.mp4');
-    await generateSceneVideo({ scene: 1, duration: dur1 }, vid1, { imagePath: existsSync(img1) ? img1 : null });
+    await generateSceneVideo({ scene: 1, duration: dur1 }, vid1, { imagePath: img1 });
     console.log(`  Video 1: ${dur1}s (pan/zoom)`);
-    await generateSceneVideo({ scene: 2, duration: dur2 }, vid2, { imagePath: existsSync(img2) ? img2 : null });
+    await generateSceneVideo({ scene: 2, duration: dur2 }, vid2, { imagePath: img2 });
     console.log(`  Video 2: ${dur2}s (pan/zoom)`);
 
     // Concat + combine with mom's audio
