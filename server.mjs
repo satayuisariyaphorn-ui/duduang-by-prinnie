@@ -210,13 +210,19 @@ async function runTextVoicePipeline(userId, scriptText, audioBuffer, messageId) 
     const dur1 = Math.ceil(audioDuration / 2);
     const dur2 = Math.ceil(audioDuration) - dur1;
 
-    async function makeVid(imgPath, duration, outPath) {
+    const EFFECTS = [
+      'scale=1620:2880,zoompan=z=min(zoom+0.0005\\,1.15):d=%d*30:x=iw/2-(iw/zoom/2):y=ih/2-(ih/zoom/2):s=1080x1920:fps=30',
+      'scale=1620:2880,zoompan=z=min(zoom+0.0008\\,1.2):d=%d*30:x=iw/2-(iw/zoom/2)+sin(on/(%d*30)*PI)*30:y=ih/2-(ih/zoom/2)+cos(on/(%d*30)*PI)*20:s=1080x1920:fps=30',
+    ];
+
+    async function makeVid(imgPath, duration, outPath, effectIdx) {
       if (existsSync(imgPath)) {
+        const effect = EFFECTS[effectIdx % EFFECTS.length].replace(/%d/g, String(duration));
         await execP(ffmpegPath, [
           '-y', '-loop', '1', '-i', imgPath,
-          '-vf', 'scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2:color=0x0B1026',
-          '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-r', '30', '-t', String(duration), outPath,
-        ], { timeout: 180000 });
+          '-vf', effect,
+          '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-t', String(duration), outPath,
+        ], { timeout: 300000 });
       } else {
         await execP(ffmpegPath, [
           '-y', '-f', 'lavfi', '-i', `color=c=0x0B1026:s=1080x1920:d=${duration}:r=30`,
@@ -227,8 +233,8 @@ async function runTextVoicePipeline(userId, scriptText, audioBuffer, messageId) 
 
     const vid1 = join(workDir, 'vid1.mp4');
     const vid2 = join(workDir, 'vid2.mp4');
-    await makeVid(img1, dur1, vid1);
-    await makeVid(img2, dur2, vid2);
+    await makeVid(img1, dur1, vid1, 0);
+    await makeVid(img2, dur2, vid2, 1);
 
     const concatPath = join(workDir, 'concat.txt');
     writeFileSync(concatPath, `file '${vid1}'\nfile '${vid2}'`);
