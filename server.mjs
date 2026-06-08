@@ -201,38 +201,98 @@ async function runVoicePipeline(userId, audioBuffer, messageId) {
     writeFileSync(join(workDir, 'script.json'), JSON.stringify(script, null, 2));
     console.log(`  Scenes: ${script.scenes?.length}`);
 
-    // Step 3: Generate images
-    console.log(`  [3/4] Generating images...`);
-    await generateAllSceneImages(script.scenes, workDir);
-
-    // Step 4: Build video — use mom's actual audio + images with zoom/pan
-    console.log(`  [4/4] Building video...`);
-    const videoFiles = await generateAllSceneVideos(script.scenes, workDir);
-
-    // Merge all scene videos into one
+    // Step 3: Get audio duration
+    console.log(`  [3/5] Checking audio duration...`);
     const { execFile: execFileCb } = await import('child_process');
     const { promisify } = await import('util');
     const execP = promisify(execFileCb);
     const ffmpegPath = (await import('ffmpeg-static')).default;
 
-    const concatListPath = join(workDir, 'concat_list.txt');
-    const concatContent = videoFiles.map(v => `file '${v.path}'`).join('\n');
-    writeFileSync(concatListPath, concatContent);
+    let audioDuration = 30;
+    try {
+      const probeResult = await execP(ffmpegPath, ['-i', audioPath, '-f', 'null', '-'], { timeout: 30000 }).catch(e => ({ stderr: e.stderr || '' }));
+      const durationMatch = (probeResult.stderr || '').match(/Duration:\s*(\d+):(\d+):(\d+\.\d+)/);
+      if (durationMatch) {
+        audioDuration = parseInt(durationMatch[1]) * 3600 + parseInt(durationMatch[2]) * 60 + parseFloat(durationMatch[3]);
+      }
+    } catch {}
+    console.log(`  Audio duration: ${audioDuration.toFixed(1)}s`);
 
+    // Step 4: Generate 2 images
+    console.log(`  [4/5] Generating images...`);
+    const { generateSceneImage } = await import('./scripts/agents/image-agent.mjs');
+    const imagesDir = join(workDir, 'images');
+    mkdirSync(imagesDir, { recursive: true });
+
+    const img1Path = join(imagesDir, 'scene_1.png');
+    const img2Path = join(imagesDir, 'scene_2.png');
+    const prompt1 = script.scenes?.[0]?.visual_prompt || 'mystical astrology zodiac chart';
+    const prompt2 = script.scenes?.[1]?.visual_prompt || script.scenes?.[0]?.visual_prompt || 'cosmic tarot cards celestial';
+
+    try {
+      await generateSceneImage({ visual_prompt: prompt1, scene: 1 }, img1Path);
+      console.log(`  Image 1: OK`);
+    } catch (e) { console.log(`  Image 1 failed: ${e.message}`); }
+    try {
+      await generateSceneImage({ visual_prompt: prompt2, scene: 2 }, img2Path);
+      console.log(`  Image 2: OK`);
+    } catch (e) { console.log(`  Image 2 failed: ${e.message}`); }
+
+    // Step 5: Build video — split audio duration between 2 images
+    console.log(`  [5/5] Building video...`);
+    const halfDur = Math.ceil(audioDuration / 2);
+    const dur1 = halfDur;
+    const dur2 = Math.ceil(audioDuration) - dur1;
+
+    const vid1Path = join(workDir, 'vid1.mp4');
+    const vid2Path = join(workDir, 'vid2.mp4');
+
+    const existsSync2 = (await import('fs')).existsSync;
+
+    // Video 1: first image with slow zoom in
+    if (existsSync2(img1Path)) {
+      await execP(ffmpegPath, [
+        '-y', '-loop', '1', '-i', img1Path,
+        '-vf', `scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,zoompan=z=min(zoom+0.0008\\,1.3):d=${dur1}*30:x=iw/2-(iw/zoom/2):y=ih/2-(ih/zoom/2):s=1080x1920:fps=30`,
+        '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-t', String(dur1), vid1Path,
+      ], { timeout: 180000 });
+    } else {
+      await execP(ffmpegPath, [
+        '-y', '-f', 'lavfi', '-i', `color=c=0x0B1026:s=1080x1920:d=${dur1}:r=30`,
+        '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-t', String(dur1), vid1Path,
+      ], { timeout: 60000 });
+    }
+
+    // Video 2: second image with slow pan
+    if (existsSync2(img2Path)) {
+      await execP(ffmpegPath, [
+        '-y', '-loop', '1', '-i', img2Path,
+        '-vf', `scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,zoompan=z=1.3:d=${dur2}*30:x=iw/2-(iw/zoom/2)+sin(on/(${dur2}*30)*PI*2)*50:y=ih/2-(ih/zoom/2):s=1080x1920:fps=30`,
+        '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-t', String(dur2), vid2Path,
+      ], { timeout: 180000 });
+    } else {
+      await execP(ffmpegPath, [
+        '-y', '-f', 'lavfi', '-i', `color=c=0x0B1026:s=1080x1920:d=${dur2}:r=30`,
+        '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-t', String(dur2), vid2Path,
+      ], { timeout: 60000 });
+    }
+
+    // Concat 2 videos
+    const concatPath = join(workDir, 'concat.txt');
+    writeFileSync(concatPath, `file '${vid1Path}'\nfile '${vid2Path}'`);
     const mergedVideoPath = join(workDir, 'merged_video.mp4');
-    await execP(ffmpegPath, ['-y', '-f', 'concat', '-safe', '0', '-i', concatListPath, '-c', 'copy', mergedVideoPath], { timeout: 120000 });
+    await execP(ffmpegPath, ['-y', '-f', 'concat', '-safe', '0', '-i', concatPath, '-c', 'copy', mergedVideoPath], { timeout: 120000 });
 
-    // Combine merged video + mom's original audio
+    // Combine video + mom's audio
     const finalPath = join(workDir, `${jobId}_final.mp4`);
     await execP(ffmpegPath, [
       '-y',
       '-i', mergedVideoPath,
       '-i', audioPath,
-      '-c:v', 'libx264',
+      '-c:v', 'copy',
       '-c:a', 'aac',
       '-b:a', '128k',
       '-shortest',
-      '-pix_fmt', 'yuv420p',
       finalPath,
     ], { timeout: 180000 });
 
