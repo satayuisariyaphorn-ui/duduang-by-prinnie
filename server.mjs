@@ -62,6 +62,9 @@ function resolveLineToken() {
 const LINE_TOKEN = resolveLineToken();
 const ADMIN_USER_IDS = (process.env.LINE_ADMIN_USERS || '').split(',').filter(Boolean);
 
+// Store pending text per user — when mom sends text first, then voice
+const pendingText = new Map();
+
 // ─── LINE Signature Verification ────────────────────────────────────────────────
 
 function verifySignature(body, signature) {
@@ -312,7 +315,114 @@ async function runVoicePipeline(userId, audioBuffer, messageId) {
   }
 }
 
-// ─── Text Pipeline Runner ────────────────────────────────────────────────────────
+// ─── Text+Voice Pipeline (mom sends text then voice) ─────────────────────────────
+
+async function runTextVoicePipeline(userId, scriptText, audioBuffer, messageId) {
+  const today = new Date().toISOString().slice(0, 10);
+  const jobId = `clip_${today.replace(/-/g, '_')}_${messageId}`;
+  const workDir = join(OUTPUT_BASE, jobId);
+  mkdirSync(workDir, { recursive: true });
+  mkdirSync(JOBS_DIR, { recursive: true });
+
+  const audioPath = join(workDir, 'mom_voice.m4a');
+  writeFileSync(audioPath, audioBuffer);
+  writeFileSync(join(workDir, 'script_text.txt'), scriptText, 'utf-8');
+
+  const jobInfo = { jobId, userId, scriptText, status: 'processing', created_at: new Date().toISOString() };
+  writeFileSync(join(JOBS_DIR, `${jobId}.json`), JSON.stringify(jobInfo, null, 2));
+
+  try {
+    const { execFile: execFileCb } = await import('child_process');
+    const { promisify } = await import('util');
+    const execP = promisify(execFileCb);
+    const ffmpegPath = (await import('ffmpeg-static')).default;
+
+    // Step 1: Get audio duration
+    console.log(`  [1/4] Checking audio...`);
+    let audioDuration = 30;
+    try {
+      const probeResult = await execP(ffmpegPath, ['-i', audioPath, '-f', 'null', '-'], { timeout: 30000 }).catch(e => ({ stderr: e.stderr || '' }));
+      const match = (probeResult.stderr || '').match(/Duration:\s*(\d+):(\d+):(\d+\.\d+)/);
+      if (match) audioDuration = parseInt(match[1]) * 3600 + parseInt(match[2]) * 60 + parseFloat(match[3]);
+    } catch {}
+    console.log(`  Audio: ${audioDuration.toFixed(1)}s`);
+
+    // Step 2: Use text to generate scene breakdown + visual prompts
+    console.log(`  [2/4] Generating visual prompts from text...`);
+    const { zodiac, contentType } = parseMotherMessage(scriptText);
+    const script = await processMotherScript({
+      text: scriptText,
+      zodiacSign: zodiac,
+      contentType,
+      platform: 'tiktok',
+    });
+    writeFileSync(join(workDir, 'script.json'), JSON.stringify(script, null, 2));
+
+    // Step 3: Generate 2 images from visual prompts
+    console.log(`  [3/4] Generating images...`);
+    const { generateSceneImage } = await import('./scripts/agents/image-agent.mjs');
+    const imagesDir = join(workDir, 'images');
+    mkdirSync(imagesDir, { recursive: true });
+
+    const prompt1 = script.scenes?.[0]?.visual_prompt || 'mystical zodiac wheel golden aspect lines navy background';
+    const prompt2 = script.scenes?.[1]?.visual_prompt || 'celestial tarot cosmic constellation navy gold';
+    const img1 = join(imagesDir, 'img_1.png');
+    const img2 = join(imagesDir, 'img_2.png');
+
+    try { await generateSceneImage({ visual_prompt: prompt1, scene: 1 }, img1); console.log(`  Image 1: OK`); } catch (e) { console.log(`  Image 1: FAILED`); }
+    try { await generateSceneImage({ visual_prompt: prompt2, scene: 2 }, img2); console.log(`  Image 2: OK`); } catch (e) { console.log(`  Image 2: FAILED`); }
+
+    // Step 4: Build video — images matched to audio duration
+    console.log(`  [4/4] Building video...`);
+    const dur1 = Math.ceil(audioDuration / 2);
+    const dur2 = Math.ceil(audioDuration) - dur1;
+
+    async function makeVid(imgPath, duration, outPath) {
+      if (existsSync(imgPath)) {
+        await execP(ffmpegPath, [
+          '-y', '-loop', '1', '-i', imgPath,
+          '-vf', 'scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2:color=0x0B1026',
+          '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-r', '30', '-t', String(duration), outPath,
+        ], { timeout: 180000 });
+      } else {
+        await execP(ffmpegPath, [
+          '-y', '-f', 'lavfi', '-i', `color=c=0x0B1026:s=1080x1920:d=${duration}:r=30`,
+          '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-t', String(duration), outPath,
+        ], { timeout: 60000 });
+      }
+    }
+
+    const vid1 = join(workDir, 'vid1.mp4');
+    const vid2 = join(workDir, 'vid2.mp4');
+    await makeVid(img1, dur1, vid1);
+    await makeVid(img2, dur2, vid2);
+
+    const concatPath = join(workDir, 'concat.txt');
+    writeFileSync(concatPath, `file '${vid1}'\nfile '${vid2}'`);
+    const merged = join(workDir, 'merged.mp4');
+    await execP(ffmpegPath, ['-y', '-f', 'concat', '-safe', '0', '-i', concatPath, '-c', 'copy', merged], { timeout: 120000 });
+
+    const finalPath = join(workDir, `${jobId}_final.mp4`);
+    await execP(ffmpegPath, ['-y', '-i', merged, '-i', audioPath, '-c:v', 'copy', '-c:a', 'aac', '-b:a', '128k', '-shortest', finalPath], { timeout: 180000 });
+
+    console.log(`  Final: ${finalPath}`);
+    jobInfo.status = 'ready';
+    jobInfo.finalVideo = finalPath;
+    jobInfo.script = script;
+    jobInfo.completed_at = new Date().toISOString();
+    writeFileSync(join(JOBS_DIR, `${jobId}.json`), JSON.stringify(jobInfo, null, 2));
+
+    return { success: true, jobId, script, finalPath };
+  } catch (err) {
+    console.error(`  Pipeline error: ${err.message}`);
+    jobInfo.status = 'failed';
+    jobInfo.error = err.message;
+    writeFileSync(join(JOBS_DIR, `${jobId}.json`), JSON.stringify(jobInfo, null, 2));
+    return { success: false, jobId, error: err.message };
+  }
+}
+
+// ─── Text-only Pipeline Runner (legacy) ──────────────────────────────────────────
 
 async function runMomPipeline(userId, scriptText, zodiac, contentType) {
   const today = new Date().toISOString().slice(0, 10);
@@ -439,11 +549,27 @@ app.post('/webhook', express.raw({ type: '*/*' }), async (req, res) => {
       const replyToken = event.replyToken;
       const messageId = event.message.id;
 
-      console.log(`[AUDIO] Received voice message: ${messageId}`);
+      // Check if mom sent text before this voice
+      const scriptText = pendingText.get(userId);
+      pendingText.delete(userId);
+
+      if (!scriptText) {
+        await replyMessage(replyToken, [{
+          type: 'text',
+          text: 'ส่งข้อความเนื้อหาก่อน แล้วค่อยอัดเสียงตามนะคะ\n\nตัวอย่าง:\n1. พิมพ์: "ราศีเมษ ดาวอังคารมาแรง เรื่องการเงินดี"\n2. อัดเสียงพูดตามเนื้อหา',
+        }]);
+        continue;
+      }
+
+      console.log(`[AUDIO] Voice + text: ${scriptText.slice(0, 60)}...`);
 
       await replyMessage(replyToken, [{
         type: 'text',
-        text: 'รับเสียงแล้วค่ะ กำลังสร้างคลิป... รอสักครู่นะคะ ประมาณ 1-2 นาที',
+        text: `รับเสียง + เนื้อหาแล้วค่ะ กำลังสร้างคลิป...
+
+เนื้อหา: ${scriptText.slice(0, 60)}...
+
+รอสักครู่นะคะ ประมาณ 1-2 นาที`,
       }]);
 
       // Download audio from LINE
@@ -456,8 +582,8 @@ app.post('/webhook', express.raw({ type: '*/*' }), async (req, res) => {
       }
       const audioBuffer = Buffer.from(await audioRes.arrayBuffer());
 
-      // Run voice pipeline
-      const result = await runVoicePipeline(userId, audioBuffer, messageId);
+      // Run voice+text pipeline
+      const result = await runTextVoicePipeline(userId, scriptText, audioBuffer, messageId);
 
       if (result.success) {
         const clipUrl = `${BASE_URL}/clips/${result.jobId}/${result.jobId}_final.mp4`;
@@ -550,61 +676,20 @@ ${result.script?.hashtags?.join(' ') || ''}`,
       continue;
     }
 
-    // Parse and acknowledge
-    const { zodiac, scriptText, contentType } = parseMotherMessage(text);
-    const zodiacLabel = zodiac || 'ทั่วไป';
+    // Save text and wait for voice
+    pendingText.set(userId, text);
+    const { zodiac: detectedZodiac } = parseMotherMessage(text);
+    const zodiacLabel = detectedZodiac || 'ทั่วไป';
 
     await replyMessage(replyToken, [{
       type: 'text',
-      text: `รับสคริปต์แล้วค่ะ กำลังสร้างคลิป...
+      text: `รับเนื้อหาแล้วค่ะ!
 
 ราศี: ${zodiacLabel}
-ประเภท: ${contentType}
 
-รอสักครู่นะคะ ประมาณ 1-2 นาที`,
+อัดเสียงส่งมาเลยนะคะ แล้วจะสร้างคลิปให้ค่ะ 🎙️`,
     }]);
-
-    // Run pipeline in background
-    console.log(`\n--- New job from LINE ---`);
-    console.log(`  User:    ${userId}`);
-    console.log(`  Zodiac:  ${zodiacLabel}`);
-    console.log(`  Type:    ${contentType}`);
-    console.log(`  Script:  ${scriptText.slice(0, 60)}...`);
-
-    const result = await runMomPipeline(userId, scriptText, zodiac, contentType);
-
-    if (result.success) {
-      console.log(`  DONE: ${result.jobId}`);
-      const qaStatus = result.qa.overall === 'APPROVE'
-        ? `QA: ผ่าน (${result.qa.confidence}%)`
-        : `QA: ${result.qa.overall} (${result.qa.confidence}%) — ควรตรวจสอบก่อนโพสต์`;
-
-      const clipUrl = `${BASE_URL}/clips/${result.jobId}/${result.jobId}_final.mp4`;
-
-      const messages = [{
-        type: 'text',
-        text: `คลิปพร้อมแล้วค่ะ!
-
-ราศี: ${zodiacLabel}
-${qaStatus}
-
-ดาวน์โหลดคลิป:
-${clipUrl}
-
-Caption:
-${result.script.caption}
-
-${result.script.hashtags?.join(' ')}`,
-      }];
-
-      await pushMessage(userId, messages);
-    } else {
-      console.log(`  FAILED: ${result.error}`);
-      await pushMessage(userId, [{
-        type: 'text',
-        text: `ขออภัยค่ะ สร้างคลิปไม่สำเร็จ: ${result.error}\n\nลองส่งใหม่อีกครั้งนะคะ`,
-      }]);
-    }
+    continue;
    } catch (err) {
     console.error(`[ERROR] Event processing failed: ${err.message}`);
     console.error(err.stack);
