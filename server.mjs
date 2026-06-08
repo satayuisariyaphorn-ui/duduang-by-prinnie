@@ -442,6 +442,79 @@ ${result.script?.hashtags?.join(' ') || ''}`,
       continue;
     }
 
+    // Handle file messages (m4a, mp3, wav)
+    if (msgType === 'file') {
+      const userId = event.source?.userId;
+      const replyToken = event.replyToken;
+      const messageId = event.message.id;
+      const fileName = event.message.fileName || '';
+
+      const isAudio = /\.(m4a|mp3|wav|aac|ogg)$/i.test(fileName);
+      if (!isAudio) {
+        await replyMessage(replyToken, [{
+          type: 'text',
+          text: 'รองรับไฟล์เสียงเท่านั้นนะคะ (.m4a, .mp3, .wav)',
+        }]);
+        continue;
+      }
+
+      const scriptText = pendingText.get(userId);
+      pendingText.delete(userId);
+
+      if (!scriptText) {
+        await replyMessage(replyToken, [{
+          type: 'text',
+          text: 'ส่งข้อความเนื้อหาก่อน แล้วค่อยส่งไฟล์เสียงตามนะคะ\n\nตัวอย่าง:\n1. พิมพ์: "ราศีเมษ ดาวอังคารมาแรง เรื่องการเงินดี"\n2. ส่งไฟล์เสียง .m4a',
+        }]);
+        continue;
+      }
+
+      console.log(`[FILE] Audio file: ${fileName}`);
+
+      await replyMessage(replyToken, [{
+        type: 'text',
+        text: `รับไฟล์เสียง + เนื้อหาแล้วค่ะ กำลังสร้างคลิป...
+
+ไฟล์: ${fileName}
+เนื้อหา: ${scriptText.slice(0, 60)}...
+
+รอสักครู่นะคะ ประมาณ 1-2 นาที`,
+      }]);
+
+      const audioRes = await fetch(`https://api-data.line.me/v2/bot/message/${messageId}/content`, {
+        headers: { 'Authorization': `Bearer ${LINE_TOKEN}` },
+      });
+      if (!audioRes.ok) {
+        await pushMessage(userId, [{ type: 'text', text: `ดาวน์โหลดไฟล์ไม่สำเร็จ: ${audioRes.status}` }]);
+        continue;
+      }
+      const audioBuffer = Buffer.from(await audioRes.arrayBuffer());
+
+      const result = await runTextVoicePipeline(userId, scriptText, audioBuffer, messageId);
+
+      if (result.success) {
+        const clipUrl = `${BASE_URL}/clips/${result.jobId}/${result.jobId}_final.mp4`;
+        await pushMessage(userId, [{
+          type: 'text',
+          text: `คลิปพร้อมแล้วค่ะ!
+
+ดาวน์โหลดคลิป:
+${clipUrl}
+
+Caption:
+${result.script?.caption || ''}
+
+${result.script?.hashtags?.join(' ') || ''}`,
+        }]);
+      } else {
+        await pushMessage(userId, [{
+          type: 'text',
+          text: `ขออภัยค่ะ สร้างคลิปไม่สำเร็จ: ${result.error}\n\nลองส่งใหม่นะคะ`,
+        }]);
+      }
+      continue;
+    }
+
     if (msgType !== 'text') {
       console.log(`[WEBHOOK] Skipping message type: ${msgType}`);
       continue;
