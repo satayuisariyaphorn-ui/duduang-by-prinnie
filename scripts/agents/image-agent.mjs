@@ -10,7 +10,7 @@ import { writeFileSync, mkdirSync } from 'fs';
 const FAL_KEY = process.env.FAL_API_KEY;
 const FAL_MODEL = process.env.FAL_MODEL || 'fal-ai/flux/schnell';
 
-const BRAND_SUFFIX = ', MU-VERSE tarot card art style: ornate illustrated mystical artwork like a premium tarot card, rich detailed illustration with gold ornamental frame and border, dark navy and deep purple background with golden accents, painted in classical tarot illustration style with modern polish, characters can appear as mystical archetypes (priestess, emperor, magician) in flowing robes with celestial elements, Thai-Eastern spiritual aesthetic blended with tarot imagery, golden lotus motifs and sacred geometry in the borders, luminous glowing elements with volumetric light, gemstone accents ruby emerald sapphire, starfield and cosmic nebula, ultra detailed beautiful artwork, portrait composition 9:16, NO photographs, NO realistic faces, NO modern clothing, NO text, NO letters, NO watermarks';
+const BRAND_SUFFIX = ', luminous glowing 3D render floating in dark cosmic void, golden inner light radiating outward, sacred mandala geometry with purple and gold energy rays behind the subject, golden sparkle particles floating in air, volumetric god rays from above, dark reflective water surface below with golden reflections, deep dark navy cosmic background with twinkling stars, photorealistic 3D render, cinematic volumetric lighting, lens flare, ultra detailed 8K quality, spiritual luxury aesthetic, Thai lotus patterns and ornate gold filigree details, portrait composition, NO text, NO letters, NO watermarks, NO words';
 
 export async function generateSceneImage(scene, outputPath) {
   if (!FAL_KEY) throw new Error('Missing FAL_API_KEY');

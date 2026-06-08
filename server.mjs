@@ -29,7 +29,7 @@ import { fileURLToPath } from 'url';
 import { processMotherScript, detectZodiac } from './scripts/agents/mom-script-agent.mjs';
 import { generateSceneVoices } from './scripts/agents/voice-agent.mjs';
 import { generateAllSceneImages } from './scripts/agents/image-agent.mjs';
-import { generateAllSceneVideos } from './scripts/agents/video-agent.mjs';
+import { generateSceneVideo, generateAllSceneVideos } from './scripts/agents/video-agent.mjs';
 import { generateSRT } from './scripts/agents/caption-agent.mjs';
 import { reviewScript } from './scripts/agents/qa-agent.mjs';
 import { assembleVideo } from './scripts/agents/assembly-agent.mjs';
@@ -119,6 +119,75 @@ async function pushMessage(userId, messages) {
   });
 }
 
+// ─── Upload + Send Clip ─────────────────────────────────────────────────────────
+
+async function uploadToFal(filePath, mimeType) {
+  const { fal } = await import('@fal-ai/client');
+  fal.config({ credentials: process.env.FAL_API_KEY });
+  const buf = readFileSync(filePath);
+  const blob = new Blob([buf], { type: mimeType });
+  return await fal.storage.upload(blob);
+}
+
+async function generateThumbnail(videoPath, outputPath) {
+  const { execFile: execFileCb } = await import('child_process');
+  const { promisify } = await import('util');
+  const execP = promisify(execFileCb);
+  const ffmpegStatic = (await import('ffmpeg-static')).default;
+  await execP(ffmpegStatic, [
+    '-y', '-i', videoPath, '-ss', '1', '-vframes', '1',
+    '-vf', 'scale=480:854',
+    outputPath,
+  ], { timeout: 30000 });
+  return outputPath;
+}
+
+async function sendClipToLine(userId, result) {
+  let clipUrl = `${BASE_URL}/clips/${result.jobId}/${result.jobId}_final.mp4`;
+  let thumbUrl = null;
+
+  // Upload video + thumbnail to FAL for public HTTPS URLs
+  if (process.env.FAL_API_KEY) {
+    try {
+      clipUrl = await uploadToFal(result.finalPath, 'video/mp4');
+      console.log(`  Uploaded video: ${clipUrl}`);
+    } catch (e) { console.log(`  Video upload fallback: ${e.message}`); }
+
+    try {
+      const thumbPath = result.finalPath.replace('_final.mp4', '_thumb.jpg');
+      await generateThumbnail(result.finalPath, thumbPath);
+      thumbUrl = await uploadToFal(thumbPath, 'image/jpeg');
+      console.log(`  Uploaded thumbnail: ${thumbUrl}`);
+    } catch (e) { console.log(`  Thumbnail fallback: ${e.message}`); }
+  }
+
+  const messages = [];
+
+  // Send as LINE video message for easy save/download
+  if (clipUrl.startsWith('https://') && thumbUrl) {
+    messages.push({
+      type: 'video',
+      originalContentUrl: clipUrl,
+      previewImageUrl: thumbUrl,
+    });
+  }
+
+  // Always send text with caption + download link
+  messages.push({
+    type: 'text',
+    text: `คลิปพร้อมแล้วค่ะ! 🎬
+
+${thumbUrl ? 'กดวิดีโอด้านบนเพื่อดู แล้วกด save ได้เลย' : `ดาวน์โหลด (กดค้าง):\n${clipUrl}`}
+
+Caption:
+${result.script?.caption || ''}
+
+${result.script?.hashtags?.join(' ') || ''}`,
+  });
+
+  await pushMessage(userId, messages);
+}
+
 // ─── Message Parser ─────────────────────────────────────────────────────────────
 
 function parseMotherMessage(text) {
@@ -205,39 +274,17 @@ async function runTextVoicePipeline(userId, scriptText, audioBuffer, messageId) 
     try { await generateSceneImage({ visual_prompt: prompt1, scene: 1 }, img1); console.log(`  Image 1: OK`); } catch (e) { console.log(`  Image 1: FAILED`); }
     try { await generateSceneImage({ visual_prompt: prompt2, scene: 2 }, img2); console.log(`  Image 2: OK`); } catch (e) { console.log(`  Image 2: FAILED`); }
 
-    // Step 4: Build video — images matched to audio duration
-    console.log(`  [4/4] Building video...`);
+    // Step 4: Build video with pan/zoom (Ken Burns effect)
+    console.log(`  [4/4] Building video with pan/zoom...`);
     const dur1 = Math.ceil(audioDuration / 2);
     const dur2 = Math.ceil(audioDuration) - dur1;
 
-    // Zoom/drift effects — different per image for variety
-    const EFFECTS = [
-      'scale=2160:3840,zoompan=z=min(zoom+0.0004\\,1.12):d=%d*30:x=iw/2-(iw/zoom/2)+sin(on/(%d*30)*PI*2)*20:y=ih/2-(ih/zoom/2)+cos(on/(%d*30)*PI*2)*15:s=1080x1920:fps=30',
-      'scale=2160:3840,zoompan=z=1.15-in/(%d*30)*0.08:d=%d*30:x=iw/2-(iw/zoom/2)+sin(on/(%d*30)*PI)*25:y=ih/2-(ih/zoom/2):s=1080x1920:fps=30',
-    ];
-
-    async function makeVid(imgPath, duration, outPath, effectIdx) {
-      if (existsSync(imgPath)) {
-        const effect = EFFECTS[effectIdx % EFFECTS.length].replace(/%d/g, String(duration));
-        await execP(ffmpegPath, [
-          '-y', '-loop', '1', '-i', imgPath,
-          '-vf', effect,
-          '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-t', String(duration), outPath,
-        ], { timeout: 300000 });
-      } else {
-        await execP(ffmpegPath, [
-          '-y', '-f', 'lavfi', '-i', `color=c=0x0B1026:s=1080x1920:d=${duration}:r=30`,
-          '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-t', String(duration), outPath,
-        ], { timeout: 60000 });
-      }
-    }
-
     const vid1 = join(workDir, 'vid1.mp4');
     const vid2 = join(workDir, 'vid2.mp4');
-    await makeVid(img1, dur1, vid1, 0);
-    console.log(`  Video 1: ${dur1}s zoom+drift`);
-    await makeVid(img2, dur2, vid2, 1);
-    console.log(`  Video 2: ${dur2}s zoom-out+sway`);
+    await generateSceneVideo({ scene: 1, duration: dur1 }, vid1, { imagePath: existsSync(img1) ? img1 : null });
+    console.log(`  Video 1: ${dur1}s (pan/zoom)`);
+    await generateSceneVideo({ scene: 2, duration: dur2 }, vid2, { imagePath: existsSync(img2) ? img2 : null });
+    console.log(`  Video 2: ${dur2}s (pan/zoom)`);
 
     // Concat + combine with mom's audio
     const concatPath = join(workDir, 'concat.txt');
@@ -429,30 +476,7 @@ app.post('/webhook', express.raw({ type: '*/*' }), async (req, res) => {
       const result = await runTextVoicePipeline(userId, scriptText, audioBuffer, messageId);
 
       if (result.success) {
-        // Upload to FAL for download link
-        let clipUrl = `${BASE_URL}/clips/${result.jobId}/${result.jobId}_final.mp4`;
-        try {
-          const { fal } = await import('@fal-ai/client');
-          fal.config({ credentials: process.env.FAL_API_KEY });
-          const vidBuf = readFileSync(result.finalPath);
-          const blob = new Blob([vidBuf], { type: 'video/mp4' });
-          clipUrl = await fal.storage.upload(blob);
-        } catch (e) { console.log(`  Upload fallback: ${e.message}`); }
-
-        await pushMessage(userId, [{
-          type: 'text',
-          text: `คลิปพร้อมแล้วค่ะ! 🎬
-
-ดาวน์โหลดคลิป (กดค้างเพื่อ save):
-${clipUrl}
-
-พร้อมลง TikTok / Reels / Shorts ได้เลย
-
-Caption:
-${result.script?.caption || ''}
-
-${result.script?.hashtags?.join(' ') || ''}`,
-        }]);
+        await sendClipToLine(userId, result);
       } else {
         await pushMessage(userId, [{
           type: 'text',
@@ -513,29 +537,7 @@ ${result.script?.hashtags?.join(' ') || ''}`,
       const result = await runTextVoicePipeline(userId, scriptText, audioBuffer, messageId);
 
       if (result.success) {
-        let clipUrl = `${BASE_URL}/clips/${result.jobId}/${result.jobId}_final.mp4`;
-        try {
-          const { fal } = await import('@fal-ai/client');
-          fal.config({ credentials: process.env.FAL_API_KEY });
-          const vidBuf = readFileSync(result.finalPath);
-          const blob = new Blob([vidBuf], { type: 'video/mp4' });
-          clipUrl = await fal.storage.upload(blob);
-        } catch (e) { console.log(`  Upload fallback: ${e.message}`); }
-
-        await pushMessage(userId, [{
-          type: 'text',
-          text: `คลิปพร้อมแล้วค่ะ! 🎬
-
-ดาวน์โหลดคลิป (กดค้างเพื่อ save):
-${clipUrl}
-
-พร้อมลง TikTok / Reels / Shorts ได้เลย
-
-Caption:
-${result.script?.caption || ''}
-
-${result.script?.hashtags?.join(' ') || ''}`,
-        }]);
+        await sendClipToLine(userId, result);
       } else {
         await pushMessage(userId, [{
           type: 'text',
@@ -700,10 +702,23 @@ app.post('/api/generate', express.json(), async (req, res) => {
   console.log(`  Zodiac: ${finalZodiac}`);
   console.log(`  Type:   ${finalType}`);
 
-  res.json({ status: 'processing', message: 'Pipeline started' });
-
   const result = await runMomPipeline('api_user', parsed.scriptText, finalZodiac, finalType);
   console.log(`  Result: ${result.success ? 'OK' : 'FAILED'}`);
+
+  if (result.success) {
+    const clipUrl = `${BASE_URL}/clips/${result.jobId}/${result.jobId}_final.mp4`;
+    res.json({ status: 'ready', jobId: result.jobId, clipUrl, qa: result.qa });
+  } else {
+    res.status(500).json({ status: 'failed', error: result.error });
+  }
+});
+
+// Download endpoint — forces browser download
+app.get('/download/:jobId', (req, res) => {
+  const jobId = req.params.jobId;
+  const filePath = join(OUTPUT_BASE, jobId, `${jobId}_final.mp4`);
+  if (!existsSync(filePath)) return res.status(404).json({ error: 'Clip not found' });
+  res.download(filePath, `${jobId}.mp4`);
 });
 
 // ─── Health Check ───────────────────────────────────────────────────────────────
