@@ -218,7 +218,7 @@ async function runTextVoicePipeline(userId, scriptText, audioBuffer, messageId) 
       const blob = new Blob([imgBuf], { type: 'image/jpeg' });
       const imgUrl = await fal.storage.upload(blob);
 
-      const res = await fetch('https://fal.run/fal-ai/kling-video/v1/standard/image-to-video', {
+      const res = await fetch('https://fal.run/fal-ai/minimax/video-01-live/image-to-video', {
         method: 'POST',
         headers: {
           'Authorization': `Key ${process.env.FAL_API_KEY}`,
