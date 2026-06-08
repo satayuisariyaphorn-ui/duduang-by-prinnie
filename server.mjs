@@ -249,33 +249,27 @@ async function runVoicePipeline(userId, audioBuffer, messageId) {
 
     const existsSync2 = (await import('fs')).existsSync;
 
-    // Video 1: first image with slow zoom in
-    if (existsSync2(img1Path)) {
-      await execP(ffmpegPath, [
-        '-y', '-loop', '1', '-i', img1Path,
-        '-vf', `scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,zoompan=z=min(zoom+0.0008\\,1.3):d=${dur1}*30:x=iw/2-(iw/zoom/2):y=ih/2-(ih/zoom/2):s=1080x1920:fps=30`,
-        '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-t', String(dur1), vid1Path,
-      ], { timeout: 180000 });
-    } else {
-      await execP(ffmpegPath, [
-        '-y', '-f', 'lavfi', '-i', `color=c=0x0B1026:s=1080x1920:d=${dur1}:r=30`,
-        '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-t', String(dur1), vid1Path,
-      ], { timeout: 60000 });
+    async function makeImageVideo(imgPath, duration, outPath) {
+      if (existsSync2(imgPath)) {
+        await execP(ffmpegPath, [
+          '-y', '-loop', '1', '-i', imgPath,
+          '-vf', 'scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2:color=0x0B1026',
+          '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-r', '30', '-t', String(duration),
+          outPath,
+        ], { timeout: 180000 });
+      } else {
+        await execP(ffmpegPath, [
+          '-y', '-f', 'lavfi', '-i', `color=c=0x0B1026:s=1080x1920:d=${duration}:r=30`,
+          '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-t', String(duration),
+          outPath,
+        ], { timeout: 60000 });
+      }
     }
 
-    // Video 2: second image with slow pan
-    if (existsSync2(img2Path)) {
-      await execP(ffmpegPath, [
-        '-y', '-loop', '1', '-i', img2Path,
-        '-vf', `scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,zoompan=z=1.3:d=${dur2}*30:x=iw/2-(iw/zoom/2)+sin(on/(${dur2}*30)*PI*2)*50:y=ih/2-(ih/zoom/2):s=1080x1920:fps=30`,
-        '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-t', String(dur2), vid2Path,
-      ], { timeout: 180000 });
-    } else {
-      await execP(ffmpegPath, [
-        '-y', '-f', 'lavfi', '-i', `color=c=0x0B1026:s=1080x1920:d=${dur2}:r=30`,
-        '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-t', String(dur2), vid2Path,
-      ], { timeout: 60000 });
-    }
+    await makeImageVideo(img1Path, dur1, vid1Path);
+    console.log(`  Video 1: ${dur1}s`);
+    await makeImageVideo(img2Path, dur2, vid2Path);
+    console.log(`  Video 2: ${dur2}s`);
 
     // Concat 2 videos
     const concatPath = join(workDir, 'concat.txt');
