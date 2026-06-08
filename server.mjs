@@ -355,26 +355,40 @@ app.post('/webhook', express.raw({ type: '*/*' }), async (req, res) => {
 
     if (result.success) {
       console.log(`  DONE: ${result.jobId}`);
-      const clipUrl = `${BASE_URL}/clips/${result.jobId}/${result.jobId}_final.mp4`;
       const qaStatus = result.qa.overall === 'APPROVE'
         ? `QA: ผ่าน (${result.qa.confidence}%)`
         : `QA: ${result.qa.overall} (${result.qa.confidence}%) — ควรตรวจสอบก่อนโพสต์`;
 
-      await pushMessage(userId, [{
+      // Upload final video to FAL storage for public URL
+      let clipUrl = '';
+      try {
+        const { fal } = await import('@fal-ai/client');
+        fal.config({ credentials: process.env.FAL_API_KEY });
+        const videoData = readFileSync(result.finalPath);
+        const blob = new Blob([videoData], { type: 'video/mp4' });
+        clipUrl = await fal.storage.upload(blob);
+        console.log(`  Uploaded: ${clipUrl}`);
+      } catch (uploadErr) {
+        console.error(`  Upload failed: ${uploadErr.message}`);
+        clipUrl = '(upload failed)';
+      }
+
+      const messages = [{
         type: 'text',
         text: `คลิปพร้อมแล้วค่ะ!
 
 ราศี: ${zodiacLabel}
 ${qaStatus}
 
-ดาวน์โหลดคลิป:
-${clipUrl}
+${clipUrl !== '(upload failed)' ? `ดาวน์โหลดคลิป:\n${clipUrl}` : 'ไม่สามารถอัปโหลดคลิปได้'}
 
 Caption:
 ${result.script.caption}
 
 ${result.script.hashtags?.join(' ')}`,
-      }]);
+      }];
+
+      await pushMessage(userId, messages);
     } else {
       console.log(`  FAILED: ${result.error}`);
       await pushMessage(userId, [{
@@ -432,6 +446,7 @@ app.get('/debug/env', (req, res) => {
     elevenlabs: !!process.env.ELEVENLABS_API_KEY,
     elevenlabsVoice: process.env.ELEVENLABS_VOICE_ID || 'default',
     fal: !!process.env.FAL_API_KEY,
+    minimaxVoice: process.env.MINIMAX_VOICE_ID || 'default (Voiceeffe72d71780906562)',
     lineSecret: !!LINE_SECRET,
     lineToken: LINE_TOKEN?.length || 0,
     railwayDomain: process.env.RAILWAY_PUBLIC_DOMAIN || 'not set',
