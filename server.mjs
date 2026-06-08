@@ -145,7 +145,116 @@ function parseMotherMessage(text) {
   return { zodiac, scriptText, contentType };
 }
 
-// ─── Pipeline Runner ────────────────────────────────────────────────────────────
+// ─── Voice Pipeline (mom sends audio) ────────────────────────────────────────────
+
+async function runVoicePipeline(userId, audioBuffer, messageId) {
+  const today = new Date().toISOString().slice(0, 10);
+  const jobId = `voice_${today.replace(/-/g, '_')}_${messageId}`;
+  const workDir = join(OUTPUT_BASE, jobId);
+  mkdirSync(workDir, { recursive: true });
+  mkdirSync(JOBS_DIR, { recursive: true });
+
+  const audioPath = join(workDir, 'mom_voice.m4a');
+  writeFileSync(audioPath, audioBuffer);
+
+  const jobInfo = { jobId, userId, status: 'processing', created_at: new Date().toISOString() };
+  writeFileSync(join(JOBS_DIR, `${jobId}.json`), JSON.stringify(jobInfo, null, 2));
+
+  try {
+    // Step 1: Transcribe audio using Anthropic (send as base64)
+    console.log(`  [1/4] Transcribing audio...`);
+    const Anthropic = (await import('@anthropic-ai/sdk')).default;
+    const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+
+    // Convert m4a to text via Whisper on FAL
+    const { fal } = await import('@fal-ai/client');
+    fal.config({ credentials: process.env.FAL_API_KEY });
+    const audioBlob = new Blob([audioBuffer], { type: 'audio/mp4' });
+    const audioUrl = await fal.storage.upload(audioBlob);
+
+    const whisperResult = await fetch('https://fal.run/fal-ai/whisper', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Key ${process.env.FAL_API_KEY}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ audio_url: audioUrl, language: 'th' }),
+    });
+    const whisperData = await whisperResult.json();
+    const transcription = whisperData.text || '';
+    console.log(`  Transcription: ${transcription.slice(0, 80)}...`);
+    writeFileSync(join(workDir, 'transcription.txt'), transcription, 'utf-8');
+
+    if (transcription.length < 10) {
+      throw new Error('เสียงสั้นเกินไปหรือไม่ชัด ลองอัดใหม่นะคะ');
+    }
+
+    // Step 2: Process script into scenes (for visual prompts)
+    console.log(`  [2/4] Processing scenes...`);
+    const { zodiac, scriptText, contentType } = parseMotherMessage(transcription);
+    const script = await processMotherScript({
+      text: transcription,
+      zodiacSign: zodiac,
+      contentType,
+      platform: 'tiktok',
+    });
+    writeFileSync(join(workDir, 'script.json'), JSON.stringify(script, null, 2));
+    console.log(`  Scenes: ${script.scenes?.length}`);
+
+    // Step 3: Generate images
+    console.log(`  [3/4] Generating images...`);
+    await generateAllSceneImages(script.scenes, workDir);
+
+    // Step 4: Build video — use mom's actual audio + images with zoom/pan
+    console.log(`  [4/4] Building video...`);
+    const videoFiles = await generateAllSceneVideos(script.scenes, workDir);
+
+    // Merge all scene videos into one
+    const { execFile: execFileCb } = await import('child_process');
+    const { promisify } = await import('util');
+    const execP = promisify(execFileCb);
+    const ffmpegPath = (await import('ffmpeg-static')).default;
+
+    const concatListPath = join(workDir, 'concat_list.txt');
+    const concatContent = videoFiles.map(v => `file '${v.path}'`).join('\n');
+    writeFileSync(concatListPath, concatContent);
+
+    const mergedVideoPath = join(workDir, 'merged_video.mp4');
+    await execP(ffmpegPath, ['-y', '-f', 'concat', '-safe', '0', '-i', concatListPath, '-c', 'copy', mergedVideoPath], { timeout: 120000 });
+
+    // Combine merged video + mom's original audio
+    const finalPath = join(workDir, `${jobId}_final.mp4`);
+    await execP(ffmpegPath, [
+      '-y',
+      '-i', mergedVideoPath,
+      '-i', audioPath,
+      '-c:v', 'libx264',
+      '-c:a', 'aac',
+      '-b:a', '128k',
+      '-shortest',
+      '-pix_fmt', 'yuv420p',
+      finalPath,
+    ], { timeout: 180000 });
+
+    console.log(`  Final: ${finalPath}`);
+
+    jobInfo.status = 'ready';
+    jobInfo.finalVideo = finalPath;
+    jobInfo.script = script;
+    jobInfo.completed_at = new Date().toISOString();
+    writeFileSync(join(JOBS_DIR, `${jobId}.json`), JSON.stringify(jobInfo, null, 2));
+
+    return { success: true, jobId, script, finalPath };
+  } catch (err) {
+    console.error(`  Voice pipeline error: ${err.message}`);
+    jobInfo.status = 'failed';
+    jobInfo.error = err.message;
+    writeFileSync(join(JOBS_DIR, `${jobId}.json`), JSON.stringify(jobInfo, null, 2));
+    return { success: false, jobId, error: err.message };
+  }
+}
+
+// ─── Text Pipeline Runner ────────────────────────────────────────────────────────
 
 async function runMomPipeline(userId, scriptText, zodiac, contentType) {
   const today = new Date().toISOString().slice(0, 10);
@@ -263,8 +372,70 @@ app.post('/webhook', express.raw({ type: '*/*' }), async (req, res) => {
 
   for (const event of events) {
    try {
-    if (event.type !== 'message' || event.message?.type !== 'text') {
-      console.log(`[WEBHOOK] Skipping event type: ${event.type}/${event.message?.type}`);
+    if (event.type !== 'message') continue;
+    const msgType = event.message?.type;
+
+    // Handle audio/voice messages from mom
+    if (msgType === 'audio') {
+      const userId = event.source?.userId;
+      const replyToken = event.replyToken;
+      const messageId = event.message.id;
+
+      console.log(`[AUDIO] Received voice message: ${messageId}`);
+
+      await replyMessage(replyToken, [{
+        type: 'text',
+        text: 'รับเสียงแล้วค่ะ กำลังสร้างคลิป... รอสักครู่นะคะ ประมาณ 1-2 นาที',
+      }]);
+
+      // Download audio from LINE
+      const audioRes = await fetch(`https://api-data.line.me/v2/bot/message/${messageId}/content`, {
+        headers: { 'Authorization': `Bearer ${LINE_TOKEN}` },
+      });
+      if (!audioRes.ok) {
+        await pushMessage(userId, [{ type: 'text', text: `ดาวน์โหลดเสียงไม่สำเร็จ: ${audioRes.status}` }]);
+        continue;
+      }
+      const audioBuffer = Buffer.from(await audioRes.arrayBuffer());
+
+      // Run voice pipeline
+      const result = await runVoicePipeline(userId, audioBuffer, messageId);
+
+      if (result.success) {
+        let clipUrl = '';
+        try {
+          const { fal } = await import('@fal-ai/client');
+          fal.config({ credentials: process.env.FAL_API_KEY });
+          const videoData = readFileSync(result.finalPath);
+          const blob = new Blob([videoData], { type: 'video/mp4' });
+          clipUrl = await fal.storage.upload(blob);
+        } catch (uploadErr) {
+          console.error(`  Upload failed: ${uploadErr.message}`);
+          clipUrl = '(upload failed)';
+        }
+
+        await pushMessage(userId, [{
+          type: 'text',
+          text: `คลิปพร้อมแล้วค่ะ!
+
+${clipUrl !== '(upload failed)' ? `ดาวน์โหลดคลิป:\n${clipUrl}` : 'อัปโหลดไม่สำเร็จ'}
+
+Caption:
+${result.script?.caption || ''}
+
+${result.script?.hashtags?.join(' ') || ''}`,
+        }]);
+      } else {
+        await pushMessage(userId, [{
+          type: 'text',
+          text: `ขออภัยค่ะ สร้างคลิปไม่สำเร็จ: ${result.error}\n\nลองส่งใหม่นะคะ`,
+        }]);
+      }
+      continue;
+    }
+
+    if (msgType !== 'text') {
+      console.log(`[WEBHOOK] Skipping message type: ${msgType}`);
       continue;
     }
 
