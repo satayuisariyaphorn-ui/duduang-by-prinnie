@@ -456,23 +456,14 @@ app.post('/webhook', express.raw({ type: '*/*' }), async (req, res) => {
       const result = await runVoicePipeline(userId, audioBuffer, messageId);
 
       if (result.success) {
-        let clipUrl = '';
-        try {
-          const { fal } = await import('@fal-ai/client');
-          fal.config({ credentials: process.env.FAL_API_KEY });
-          const videoData = readFileSync(result.finalPath);
-          const blob = new Blob([videoData], { type: 'video/mp4' });
-          clipUrl = await fal.storage.upload(blob);
-        } catch (uploadErr) {
-          console.error(`  Upload failed: ${uploadErr.message}`);
-          clipUrl = '(upload failed)';
-        }
+        const clipUrl = `${BASE_URL}/clips/${result.jobId}/${result.jobId}_final.mp4`;
 
         await pushMessage(userId, [{
           type: 'text',
           text: `คลิปพร้อมแล้วค่ะ!
 
-${clipUrl !== '(upload failed)' ? `ดาวน์โหลดคลิป:\n${clipUrl}` : 'อัปโหลดไม่สำเร็จ'}
+ดาวน์โหลดคลิป:
+${clipUrl}
 
 Caption:
 ${result.script?.caption || ''}
@@ -584,19 +575,7 @@ ${result.script?.hashtags?.join(' ') || ''}`,
         ? `QA: ผ่าน (${result.qa.confidence}%)`
         : `QA: ${result.qa.overall} (${result.qa.confidence}%) — ควรตรวจสอบก่อนโพสต์`;
 
-      // Upload final video to FAL storage for public URL
-      let clipUrl = '';
-      try {
-        const { fal } = await import('@fal-ai/client');
-        fal.config({ credentials: process.env.FAL_API_KEY });
-        const videoData = readFileSync(result.finalPath);
-        const blob = new Blob([videoData], { type: 'video/mp4' });
-        clipUrl = await fal.storage.upload(blob);
-        console.log(`  Uploaded: ${clipUrl}`);
-      } catch (uploadErr) {
-        console.error(`  Upload failed: ${uploadErr.message}`);
-        clipUrl = '(upload failed)';
-      }
+      const clipUrl = `${BASE_URL}/clips/${result.jobId}/${result.jobId}_final.mp4`;
 
       const messages = [{
         type: 'text',
@@ -605,7 +584,8 @@ ${result.script?.hashtags?.join(' ') || ''}`,
 ราศี: ${zodiacLabel}
 ${qaStatus}
 
-${clipUrl !== '(upload failed)' ? `ดาวน์โหลดคลิป:\n${clipUrl}` : 'ไม่สามารถอัปโหลดคลิปได้'}
+ดาวน์โหลดคลิป:
+${clipUrl}
 
 Caption:
 ${result.script.caption}
