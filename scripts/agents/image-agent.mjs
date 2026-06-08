@@ -10,7 +10,7 @@ import { writeFileSync, mkdirSync } from 'fs';
 const FAL_KEY = process.env.FAL_API_KEY;
 const FAL_MODEL = process.env.FAL_MODEL || 'fal-ai/flux/schnell';
 
-const BRAND_SUFFIX = ', synastry chart aesthetic, natal chart wheel, zodiac wheel with aspect lines, planetary alignments, geometric sacred geometry, birth chart overlay, constellation map, glowing aspect lines connecting planets, deep navy #0B1026 background, gold #E8C77A accents and linework, celestial cartography, cosmic blueprint style, ethereal glow, vertical composition, high quality, NO people, NO faces, NO human figures, NO hands, NO bodies';
+const BRAND_SUFFIX = ', Thai mystical spiritual aesthetic (สายมู), symbolic emotional storytelling, use symbolic objects to convey emotions: golden coins and treasure chests for wealth and prosperity, blooming lotus flowers for happiness and new beginnings, wilting flowers or rain for sadness, broken chains for freedom, rising sun for hope, glowing candles and incense for spiritual practice, Thai amulets and sacred geometry, offering flowers and gold leaf, deep navy #0B1026 background, gold #E8C77A warm accents, dreamy bokeh lighting, cinematic vertical composition, beautiful and elegant, NO people, NO faces, NO human figures, NO hands, NO bodies, NO text, NO letters';
 
 export async function generateSceneImage(scene, outputPath) {
   if (!FAL_KEY) throw new Error('Missing FAL_API_KEY');
