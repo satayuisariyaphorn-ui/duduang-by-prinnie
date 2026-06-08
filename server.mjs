@@ -210,39 +210,77 @@ async function runTextVoicePipeline(userId, scriptText, audioBuffer, messageId) 
     const dur1 = Math.ceil(audioDuration / 2);
     const dur2 = Math.ceil(audioDuration) - dur1;
 
-    const EFFECTS = [
-      'scale=1620:2880,zoompan=z=min(zoom+0.0005\\,1.15):d=%d*30:x=iw/2-(iw/zoom/2):y=ih/2-(ih/zoom/2):s=1080x1920:fps=30',
-      'scale=1620:2880,zoompan=z=min(zoom+0.0008\\,1.2):d=%d*30:x=iw/2-(iw/zoom/2)+sin(on/(%d*30)*PI)*30:y=ih/2-(ih/zoom/2)+cos(on/(%d*30)*PI)*20:s=1080x1920:fps=30',
-    ];
+    // Generate animated videos from images using Kling via FAL
+    async function imageToVideo(imgPath, prompt) {
+      const { fal } = await import('@fal-ai/client');
+      fal.config({ credentials: process.env.FAL_API_KEY });
+      const imgBuf = readFileSync(imgPath);
+      const blob = new Blob([imgBuf], { type: 'image/jpeg' });
+      const imgUrl = await fal.storage.upload(blob);
 
-    async function makeVid(imgPath, duration, outPath, effectIdx) {
-      if (existsSync(imgPath)) {
-        const effect = EFFECTS[effectIdx % EFFECTS.length].replace(/%d/g, String(duration));
-        await execP(ffmpegPath, [
-          '-y', '-loop', '1', '-i', imgPath,
-          '-vf', effect,
-          '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-t', String(duration), outPath,
-        ], { timeout: 300000 });
-      } else {
-        await execP(ffmpegPath, [
-          '-y', '-f', 'lavfi', '-i', `color=c=0x0B1026:s=1080x1920:d=${duration}:r=30`,
-          '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-t', String(duration), outPath,
-        ], { timeout: 60000 });
-      }
+      const res = await fetch('https://fal.run/fal-ai/kling-video/v1/standard/image-to-video', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Key ${process.env.FAL_API_KEY}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          image_url: imgUrl,
+          prompt: prompt || 'mystical energy flowing, golden sparkles floating, gentle cosmic motion',
+        }),
+      });
+      if (!res.ok) throw new Error(`Kling ${res.status}: ${(await res.text()).slice(0, 200)}`);
+      const data = await res.json();
+      return data.video?.url;
     }
+
+    const motionPrompts = [
+      'mystical tarot energy glowing, golden particles floating upward, gentle cosmic motion, ethereal light',
+      'celestial elements slowly moving, stars twinkling, sacred geometry pulsing with golden light',
+    ];
 
     const vid1 = join(workDir, 'vid1.mp4');
     const vid2 = join(workDir, 'vid2.mp4');
-    await makeVid(img1, dur1, vid1, 0);
-    await makeVid(img2, dur2, vid2, 1);
 
+    // Generate animated videos from images
+    for (let i = 0; i < 2; i++) {
+      const imgPath = i === 0 ? img1 : img2;
+      const vidPath = i === 0 ? vid1 : vid2;
+      const dur = i === 0 ? dur1 : dur2;
+
+      if (existsSync(imgPath)) {
+        try {
+          console.log(`  Animating image ${i + 1} with Kling...`);
+          const videoUrl = await imageToVideo(imgPath, motionPrompts[i]);
+          if (videoUrl) {
+            const vidRes = await fetch(videoUrl);
+            writeFileSync(vidPath, Buffer.from(await vidRes.arrayBuffer()));
+            console.log(`  Video ${i + 1}: Kling OK`);
+            continue;
+          }
+        } catch (e) {
+          console.log(`  Kling failed for image ${i + 1}: ${e.message} — using static`);
+        }
+      }
+      // Fallback: static image
+      await execP(ffmpegPath, [
+        '-y', '-loop', '1', '-i', existsSync(imgPath) ? imgPath : '',
+        ...(existsSync(imgPath)
+          ? ['-vf', 'scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2:color=0x0B1026']
+          : ['-f', 'lavfi', '-i', `color=c=0x0B1026:s=1080x1920:d=${dur}:r=30`]),
+        '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-r', '30', '-t', String(dur), vidPath,
+      ].filter(Boolean), { timeout: 180000 });
+      console.log(`  Video ${i + 1}: static fallback ${dur}s`);
+    }
+
+    // Concat videos + combine with mom's audio
     const concatPath = join(workDir, 'concat.txt');
     writeFileSync(concatPath, `file '${vid1}'\nfile '${vid2}'`);
     const merged = join(workDir, 'merged.mp4');
     await execP(ffmpegPath, ['-y', '-f', 'concat', '-safe', '0', '-i', concatPath, '-c', 'copy', merged], { timeout: 120000 });
 
     const finalPath = join(workDir, `${jobId}_final.mp4`);
-    await execP(ffmpegPath, ['-y', '-i', merged, '-i', audioPath, '-c:v', 'copy', '-c:a', 'aac', '-b:a', '128k', '-shortest', finalPath], { timeout: 180000 });
+    await execP(ffmpegPath, ['-y', '-i', merged, '-i', audioPath, '-map', '0:v', '-map', '1:a', '-c:v', 'libx264', '-c:a', 'aac', '-b:a', '128k', '-shortest', '-pix_fmt', 'yuv420p', finalPath], { timeout: 180000 });
 
     console.log(`  Final: ${finalPath}`);
     jobInfo.status = 'ready';
@@ -425,14 +463,24 @@ app.post('/webhook', express.raw({ type: '*/*' }), async (req, res) => {
       const result = await runTextVoicePipeline(userId, scriptText, audioBuffer, messageId);
 
       if (result.success) {
-        const clipUrl = `${BASE_URL}/clips/${result.jobId}/${result.jobId}_final.mp4`;
+        // Upload to FAL for download link
+        let clipUrl = `${BASE_URL}/clips/${result.jobId}/${result.jobId}_final.mp4`;
+        try {
+          const { fal } = await import('@fal-ai/client');
+          fal.config({ credentials: process.env.FAL_API_KEY });
+          const vidBuf = readFileSync(result.finalPath);
+          const blob = new Blob([vidBuf], { type: 'video/mp4' });
+          clipUrl = await fal.storage.upload(blob);
+        } catch (e) { console.log(`  Upload fallback: ${e.message}`); }
 
         await pushMessage(userId, [{
           type: 'text',
-          text: `คลิปพร้อมแล้วค่ะ!
+          text: `คลิปพร้อมแล้วค่ะ! 🎬
 
-ดาวน์โหลดคลิป:
+ดาวน์โหลดคลิป (กดค้างเพื่อ save):
 ${clipUrl}
+
+พร้อมลง TikTok / Reels / Shorts ได้เลย
 
 Caption:
 ${result.script?.caption || ''}
@@ -499,13 +547,23 @@ ${result.script?.hashtags?.join(' ') || ''}`,
       const result = await runTextVoicePipeline(userId, scriptText, audioBuffer, messageId);
 
       if (result.success) {
-        const clipUrl = `${BASE_URL}/clips/${result.jobId}/${result.jobId}_final.mp4`;
+        let clipUrl = `${BASE_URL}/clips/${result.jobId}/${result.jobId}_final.mp4`;
+        try {
+          const { fal } = await import('@fal-ai/client');
+          fal.config({ credentials: process.env.FAL_API_KEY });
+          const vidBuf = readFileSync(result.finalPath);
+          const blob = new Blob([vidBuf], { type: 'video/mp4' });
+          clipUrl = await fal.storage.upload(blob);
+        } catch (e) { console.log(`  Upload fallback: ${e.message}`); }
+
         await pushMessage(userId, [{
           type: 'text',
-          text: `คลิปพร้อมแล้วค่ะ!
+          text: `คลิปพร้อมแล้วค่ะ! 🎬
 
-ดาวน์โหลดคลิป:
+ดาวน์โหลดคลิป (กดค้างเพื่อ save):
 ${clipUrl}
+
+พร้อมลง TikTok / Reels / Shorts ได้เลย
 
 Caption:
 ${result.script?.caption || ''}
