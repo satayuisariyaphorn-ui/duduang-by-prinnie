@@ -178,106 +178,110 @@ async function runVoicePipeline(userId, audioBuffer, messageId) {
         'Authorization': `Key ${process.env.FAL_API_KEY}`,
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({ audio_url: audioUrl, language: 'th' }),
+      body: JSON.stringify({ audio_url: audioUrl, language: 'th', chunk_level: 'segment' }),
     });
     const whisperData = await whisperResult.json();
     const transcription = whisperData.text || '';
+    const segments = whisperData.chunks || [];
     console.log(`  Transcription: ${transcription.slice(0, 80)}...`);
-    writeFileSync(join(workDir, 'transcription.txt'), transcription, 'utf-8');
+    console.log(`  Segments: ${segments.length}`);
+    writeFileSync(join(workDir, 'transcription.json'), JSON.stringify({ text: transcription, segments }, null, 2));
 
     if (transcription.length < 10) {
       throw new Error('เสียงสั้นเกินไปหรือไม่ชัด ลองอัดใหม่นะคะ');
     }
 
-    // Step 2: Process script into scenes (for visual prompts)
-    console.log(`  [2/4] Processing scenes...`);
-    const { zodiac, scriptText, contentType } = parseMotherMessage(transcription);
-    const script = await processMotherScript({
-      text: transcription,
-      zodiacSign: zodiac,
-      contentType,
-      platform: 'tiktok',
-    });
-    writeFileSync(join(workDir, 'script.json'), JSON.stringify(script, null, 2));
-    console.log(`  Scenes: ${script.scenes?.length}`);
-
-    // Step 3: Get audio duration
-    console.log(`  [3/5] Checking audio duration...`);
+    // Get audio duration from last segment
     const { execFile: execFileCb } = await import('child_process');
     const { promisify } = await import('util');
     const execP = promisify(execFileCb);
     const ffmpegPath = (await import('ffmpeg-static')).default;
 
-    let audioDuration = 30;
-    try {
-      const probeResult = await execP(ffmpegPath, ['-i', audioPath, '-f', 'null', '-'], { timeout: 30000 }).catch(e => ({ stderr: e.stderr || '' }));
-      const durationMatch = (probeResult.stderr || '').match(/Duration:\s*(\d+):(\d+):(\d+\.\d+)/);
-      if (durationMatch) {
-        audioDuration = parseInt(durationMatch[1]) * 3600 + parseInt(durationMatch[2]) * 60 + parseFloat(durationMatch[3]);
-      }
-    } catch {}
-    console.log(`  Audio duration: ${audioDuration.toFixed(1)}s`);
+    let audioDuration = segments.length > 0
+      ? segments[segments.length - 1].timestamp?.[1] || 30
+      : 30;
 
-    // Step 4: Generate 2 images
-    console.log(`  [4/5] Generating images...`);
+    // Step 2: Generate visual prompts from transcript segments
+    console.log(`  [2/5] Generating visual prompts...`);
+    const Anthropic = (await import('@anthropic-ai/sdk')).default;
+    const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+
+    const segTexts = segments.map((s, i) => `[${s.timestamp[0].toFixed(1)}s-${s.timestamp[1].toFixed(1)}s] ${s.text}`).join('\n');
+    const promptResp = await client.messages.create({
+      model: 'claude-haiku-4-5-20251001',
+      max_tokens: 1024,
+      temperature: 0.3,
+      system: 'สร้าง visual prompt ภาษาอังกฤษสำหรับภาพประกอบคลิปดูดวง แบ่งตามช่วงเวลาของเสียง สไตล์ synastry chart, zodiac wheel, celestial, navy #0B1026 + gold #E8C77A, NO people NO faces',
+      messages: [{ role: 'user', content: `เสียงแม่พูดแบ่งเป็น segments:\n${segTexts}\n\nDuration รวม: ${audioDuration.toFixed(1)}s\n\nสร้าง 2 ภาพ แต่ละภาพใช้กี่วินาที ตอบ JSON เท่านั้น:\n[{"start":0,"end":25,"prompt":"..."},{"start":25,"end":55,"prompt":"..."}]` }],
+    });
+
+    let imageSpecs = [
+      { start: 0, end: Math.ceil(audioDuration / 2), prompt: 'mystical zodiac wheel with golden aspect lines on navy background' },
+      { start: Math.ceil(audioDuration / 2), end: Math.ceil(audioDuration), prompt: 'celestial tarot cards cosmic constellation map navy and gold' },
+    ];
+    try {
+      const specMatch = promptResp.content[0].text.match(/\[[\s\S]*\]/);
+      if (specMatch) imageSpecs = JSON.parse(specMatch[0]);
+    } catch {}
+    console.log(`  Image specs: ${imageSpecs.map(s => `${s.start}s-${s.end}s`).join(', ')}`);
+    writeFileSync(join(workDir, 'image_specs.json'), JSON.stringify(imageSpecs, null, 2));
+
+    // Parse script for caption/hashtags
+    const { zodiac, contentType } = parseMotherMessage(transcription);
+    const script = await processMotherScript({ text: transcription, zodiacSign: zodiac, contentType, platform: 'tiktok' });
+    writeFileSync(join(workDir, 'script.json'), JSON.stringify(script, null, 2));
+
+    // Step 3: Generate images
+    console.log(`  [3/5] Generating images...`);
     const { generateSceneImage } = await import('./scripts/agents/image-agent.mjs');
     const imagesDir = join(workDir, 'images');
     mkdirSync(imagesDir, { recursive: true });
 
-    const img1Path = join(imagesDir, 'scene_1.png');
-    const img2Path = join(imagesDir, 'scene_2.png');
-    const prompt1 = script.scenes?.[0]?.visual_prompt || 'mystical astrology zodiac chart';
-    const prompt2 = script.scenes?.[1]?.visual_prompt || script.scenes?.[0]?.visual_prompt || 'cosmic tarot cards celestial';
-
-    try {
-      await generateSceneImage({ visual_prompt: prompt1, scene: 1 }, img1Path);
-      console.log(`  Image 1: OK`);
-    } catch (e) { console.log(`  Image 1 failed: ${e.message}`); }
-    try {
-      await generateSceneImage({ visual_prompt: prompt2, scene: 2 }, img2Path);
-      console.log(`  Image 2: OK`);
-    } catch (e) { console.log(`  Image 2 failed: ${e.message}`); }
-
-    // Step 5: Build video — split audio duration between 2 images
-    console.log(`  [5/5] Building video...`);
-    const halfDur = Math.ceil(audioDuration / 2);
-    const dur1 = halfDur;
-    const dur2 = Math.ceil(audioDuration) - dur1;
-
-    const vid1Path = join(workDir, 'vid1.mp4');
-    const vid2Path = join(workDir, 'vid2.mp4');
-
-    const existsSync2 = (await import('fs')).existsSync;
-
-    async function makeImageVideo(imgPath, duration, outPath) {
-      if (existsSync2(imgPath)) {
-        await execP(ffmpegPath, [
-          '-y', '-loop', '1', '-i', imgPath,
-          '-vf', 'scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2:color=0x0B1026',
-          '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-r', '30', '-t', String(duration),
-          outPath,
-        ], { timeout: 180000 });
-      } else {
-        await execP(ffmpegPath, [
-          '-y', '-f', 'lavfi', '-i', `color=c=0x0B1026:s=1080x1920:d=${duration}:r=30`,
-          '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-t', String(duration),
-          outPath,
-        ], { timeout: 60000 });
+    const imgPaths = [];
+    for (let i = 0; i < imageSpecs.length; i++) {
+      const imgPath = join(imagesDir, `img_${i + 1}.png`);
+      try {
+        await generateSceneImage({ visual_prompt: imageSpecs[i].prompt, scene: i + 1 }, imgPath);
+        imgPaths.push(imgPath);
+        console.log(`  Image ${i + 1}: OK (${imageSpecs[i].start}s-${imageSpecs[i].end}s)`);
+      } catch (e) {
+        imgPaths.push(null);
+        console.log(`  Image ${i + 1}: FAILED (${e.message})`);
       }
     }
 
-    await makeImageVideo(img1Path, dur1, vid1Path);
-    console.log(`  Video 1: ${dur1}s`);
-    await makeImageVideo(img2Path, dur2, vid2Path);
-    console.log(`  Video 2: ${dur2}s`);
+    // Step 4: Build video segments matched to speech
+    console.log(`  [4/5] Building video segments...`);
+    const vidPaths = [];
+    for (let i = 0; i < imageSpecs.length; i++) {
+      const dur = Math.max(1, Math.ceil(imageSpecs[i].end - imageSpecs[i].start));
+      const vidPath = join(workDir, `vid_${i + 1}.mp4`);
 
-    // Concat 2 videos
+      if (imgPaths[i] && existsSync(imgPaths[i])) {
+        await execP(ffmpegPath, [
+          '-y', '-loop', '1', '-i', imgPaths[i],
+          '-vf', 'scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2:color=0x0B1026',
+          '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-r', '30', '-t', String(dur),
+          vidPath,
+        ], { timeout: 180000 });
+      } else {
+        await execP(ffmpegPath, [
+          '-y', '-f', 'lavfi', '-i', `color=c=0x0B1026:s=1080x1920:d=${dur}:r=30`,
+          '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-t', String(dur),
+          vidPath,
+        ], { timeout: 60000 });
+      }
+      vidPaths.push(vidPath);
+      console.log(`  Video ${i + 1}: ${dur}s`);
+    }
+
+    // Step 5: Concat + combine with audio
+    console.log(`  [5/5] Assembling final video...`);
     const concatPath = join(workDir, 'concat.txt');
-    writeFileSync(concatPath, `file '${vid1Path}'\nfile '${vid2Path}'`);
+    writeFileSync(concatPath, vidPaths.map(p => `file '${p}'`).join('\n'));
     const mergedVideoPath = join(workDir, 'merged_video.mp4');
     await execP(ffmpegPath, ['-y', '-f', 'concat', '-safe', '0', '-i', concatPath, '-c', 'copy', mergedVideoPath], { timeout: 120000 });
 
-    // Combine video + mom's audio
     const finalPath = join(workDir, `${jobId}_final.mp4`);
     await execP(ffmpegPath, [
       '-y',
