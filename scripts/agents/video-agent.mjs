@@ -67,11 +67,18 @@ export async function generateSceneVideo(scene, outputPath, options = {}) {
   return outputPath;
 }
 
+let _bgShuffle = { files: null, ts: 0 };
 function pickStockBackground(sceneIndex) {
   if (!existsSync(BACKGROUNDS_DIR)) return null;
-  const files = readdirSync(BACKGROUNDS_DIR).filter(f => /\.(jpg|jpeg|png)$/i.test(f)).sort();
-  if (files.length === 0) return null;
-  return join(BACKGROUNDS_DIR, files[sceneIndex % files.length]);
+  // Re-shuffle every 60s so different clips get different images
+  if (!_bgShuffle.files || Date.now() - _bgShuffle.ts > 60000) {
+    _bgShuffle.files = readdirSync(BACKGROUNDS_DIR)
+      .filter(f => /\.(jpg|jpeg|png)$/i.test(f))
+      .sort(() => Math.random() - 0.5);
+    _bgShuffle.ts = Date.now();
+  }
+  if (_bgShuffle.files.length === 0) return null;
+  return join(BACKGROUNDS_DIR, _bgShuffle.files[sceneIndex % _bgShuffle.files.length]);
 }
 
 export async function generateAllSceneVideos(scenes, outputDir) {

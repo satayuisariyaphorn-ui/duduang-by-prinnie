@@ -121,12 +121,15 @@ async function pushMessage(userId, messages) {
 
 // ─── Stock Background Picker ────────────────────────────────────────────────────
 
-function pickBackground(bgDir, sceneIndex) {
-  if (!existsSync(bgDir)) return null;
-  const files = readdirSync(bgDir).filter(f => /\.(jpg|jpeg|png)$/i.test(f)).sort();
-  if (files.length === 0) return null;
-  const idx = sceneIndex % files.length;
-  return join(bgDir, files[idx]);
+function pickBackgrounds(bgDir, count) {
+  if (!existsSync(bgDir)) return Array(count).fill(null);
+  const files = readdirSync(bgDir).filter(f => /\.(jpg|jpeg|png)$/i.test(f));
+  if (files.length === 0) return Array(count).fill(null);
+  // Shuffle then pick `count` unique images
+  const shuffled = files.sort(() => Math.random() - 0.5);
+  return Array.from({ length: count }, (_, i) =>
+    join(bgDir, shuffled[i % shuffled.length])
+  );
 }
 
 // ─── Upload + Send Clip ─────────────────────────────────────────────────────────
@@ -270,11 +273,10 @@ async function runTextVoicePipeline(userId, scriptText, audioBuffer, messageId) 
     });
     writeFileSync(join(workDir, 'script.json'), JSON.stringify(script, null, 2));
 
-    // Step 3: Pick background images (stock art with pan/zoom > AI-generated)
+    // Step 3: Pick background images (shuffled stock art — different every clip)
     console.log(`  [3/4] Selecting background images...`);
     const bgDir = join(__dirname, 'assets', 'backgrounds');
-    const img1 = pickBackground(bgDir, 0);
-    const img2 = pickBackground(bgDir, 1);
+    const [img1, img2] = pickBackgrounds(bgDir, 2);
     console.log(`  BG 1: ${img1}`);
     console.log(`  BG 2: ${img2}`);
 
