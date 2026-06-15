@@ -43,6 +43,12 @@ Never ask the image model to generate Thai text inside the image.
 All Thai text must be placed in the "text_overlay" field only.
 The image_prompt must always include: "Do not include any text, letters, words, numbers, watermark, logo, Thai text, or English text."
 
+Visual style guide:
+- Use cosmic/celestial imagery: galaxy, nebula, stars, moon, aurora, night sky, golden light rays, abstract light bokeh, soft clouds.
+- Use natural landscapes: ocean, mountains, sunset, sunrise sky, calm water reflections.
+- NEVER use: Buddha statues, Buddhist temples, lotus flowers, flowers, religious symbols, religious statues, incense, candles, tarot cards, crystal balls, zodiac animals, zodiac wheels.
+- Keep it looking like a premium wallpaper or cinematic still — normal, beautiful, not overly mystical or religious.
+
 Rules:
 1. If transcript is under 60 seconds, create 1-3 scenes.
 2. If transcript is 1-3 minutes, create 3-5 scenes.
@@ -51,10 +57,11 @@ Rules:
 5. Thai headline maximum 8 words.
 6. Thai subheadline maximum 12 words.
 7. Thai caption maximum 18 words.
-8. Avoid horror, scary, dark magic, violent, sexual, political, copyrighted visuals.
-9. Keep visuals premium, mystical, elegant, trustworthy, social-media ready.
-10. Leave empty space in upper and lower thirds for text overlay.
-11. Do not create too many scenes — image generation has API cost.
+8. Avoid horror, scary, dark magic, violent, sexual, political, copyrighted, religious visuals.
+9. Avoid Buddha, lotus, flowers, temples, religious statues, tarot cards, crystal balls, zodiac animals.
+10. Keep visuals premium, elegant, cinematic, trustworthy, social-media ready.
+11. Leave empty space in upper and lower thirds for text overlay.
+12. Do not create too many scenes — image generation has API cost.
 
 Return this JSON schema:
 
@@ -79,7 +86,7 @@ Return this JSON schema:
       },
       "motion_hint": "",
       "layout_hint": "headline top center, subheadline middle, caption bottom",
-      "negative_prompt": "text, letters, words, numbers, watermark, logo, Thai text, English text, unreadable typography, fake letters, distorted zodiac signs, distorted animals, scary face, horror, dark magic, low quality, blurry, messy composition"
+      "negative_prompt": "text, letters, words, numbers, watermark, logo, Thai text, English text, Buddha, Buddhist temple, lotus, flowers, religious statue, incense, candles, tarot cards, crystal ball, zodiac wheel, zodiac animals, horror, dark magic, low quality, blurry, messy composition"
     }
   ]
 }`;
@@ -118,7 +125,7 @@ export async function planScenes(scriptText, audioDuration) {
 
 function buildFinalPrompt(scene) {
   const negativePrompt = scene.negative_prompt ||
-    'text, letters, words, numbers, watermark, logo, Thai text, English text, unreadable typography, fake letters, distorted zodiac signs, distorted animals, scary face, horror, dark magic, low quality, blurry, messy composition';
+    'text, letters, words, numbers, watermark, logo, Thai text, English text, Buddha, Buddhist temple, lotus, flowers, religious statue, incense, candles, tarot cards, crystal ball, zodiac wheel, zodiac animals, horror, dark magic, low quality, blurry, messy composition';
 
   return `Create a premium vertical 9:16 background image for a Thai astrology social media video.
 
@@ -129,17 +136,18 @@ Scene purpose:
 ${scene.purpose || 'background for fortune-telling content'}
 
 Visual:
-${scene.image_prompt || 'A luxurious mystical astrology background with glowing golden zodiac energy, soft stars, moonlight, celestial ornaments, sacred geometry. Deep navy blue and royal purple with golden glow.'}
+${scene.image_prompt || 'A cinematic night sky with soft golden light, stars, and gentle aurora. Deep navy blue gradient with warm golden glow. Clean and elegant.'}
 
 Composition:
 Vertical mobile video background.
 Keep the center visually beautiful but not too crowded.
 Leave clean empty space in the upper third and lower third for text overlay.
 No face close-up. No strange animals. No horror. No dark magic. No messy symbols.
+No Buddha. No lotus. No flowers. No religious imagery. No tarot cards. No crystal balls.
 Safe margins for social media UI.
 
 Brand style:
-Premium Thai astrology, mystical, elegant, trustworthy, cinematic, high detail, deep navy blue, royal purple, gold, soft white, warm golden glow.
+Premium cinematic, elegant, trustworthy, high detail, deep navy blue, gold, soft white, warm golden glow. Like a premium wallpaper — beautiful but normal.
 
 Lighting:
 Soft cinematic glow, golden particles, subtle stars, elegant spiritual atmosphere.

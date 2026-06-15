@@ -21,12 +21,16 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const BRAND_NAVY = '0B1026';
 const BACKGROUNDS_DIR = join(__dirname, '..', '..', 'assets', 'backgrounds');
 
+// All effects stay centered — x/y always iw/2-(iw/zoom/2), ih/2-(ih/zoom/2)
 const ZOOM_PAN_EFFECTS = [
-  'zoompan=z=min(zoom+0.001\\,1.3):d=%d*30:x=iw/2-(iw/zoom/2):y=ih/2-(ih/zoom/2):s=1080x1920:fps=30',
-  'zoompan=z=1.3:d=%d*30:x=iw/2-(iw/zoom/2)+sin(on/(%d*30)*PI*2)*50:y=ih/2-(ih/zoom/2):s=1080x1920:fps=30',
-  'zoompan=z=min(zoom+0.0015\\,1.4):d=%d*30:x=0:y=0:s=1080x1920:fps=30',
-  'zoompan=z=min(zoom+0.001\\,1.3):d=%d*30:x=iw-iw/zoom:y=ih/2-(ih/zoom/2):s=1080x1920:fps=30',
-  'zoompan=z=1.4-in/(%d*30)*0.4:d=%d*30:x=iw/2-(iw/zoom/2):y=ih/2-(ih/zoom/2):s=1080x1920:fps=30',
+  // Slow zoom in to center (1.0 → 1.25)
+  'zoompan=z=min(zoom+0.0008\\,1.25):d=%d*30:x=iw/2-(iw/zoom/2):y=ih/2-(ih/zoom/2):s=1080x1920:fps=30',
+  // Gentle zoom in to center (1.0 → 1.15)
+  'zoompan=z=min(zoom+0.0005\\,1.15):d=%d*30:x=iw/2-(iw/zoom/2):y=ih/2-(ih/zoom/2):s=1080x1920:fps=30',
+  // Slow zoom out from center (1.3 → 1.0)
+  'zoompan=z=1.3-in/(%d*30)*0.3:d=%d*30:x=iw/2-(iw/zoom/2):y=ih/2-(ih/zoom/2):s=1080x1920:fps=30',
+  // Very slow zoom in to center (1.0 → 1.2)
+  'zoompan=z=min(zoom+0.0006\\,1.2):d=%d*30:x=iw/2-(iw/zoom/2):y=ih/2-(ih/zoom/2):s=1080x1920:fps=30',
 ];
 
 export async function generateSceneVideo(scene, outputPath, options = {}) {
