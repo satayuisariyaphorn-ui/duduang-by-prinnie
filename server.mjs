@@ -273,19 +273,20 @@ async function runTextVoicePipeline(userId, scriptText, audioBuffer, messageId) 
     });
     writeFileSync(join(workDir, 'script.json'), JSON.stringify(script, null, 2));
 
-    // Step 3: Generate images matching the script content
-    console.log(`  [3/4] Generating images from script...`);
+    // Step 3: Generate images from script via Claude JSON → OpenAI gpt-image-1
+    console.log(`  [3/4] Generating images (Claude extract → OpenAI generate)...`);
     const { generateSceneImage } = await import('./scripts/agents/image-agent.mjs');
     const imagesDir = join(workDir, 'images');
     mkdirSync(imagesDir, { recursive: true });
 
-    const prompt1 = script.scenes?.[0]?.visual_prompt || `beautiful natural scene for ${contentType || 'astrology'} content`;
-    const prompt2 = script.scenes?.[1]?.visual_prompt || script.scenes?.[0]?.visual_prompt || prompt1;
+    const scene1 = script.scenes?.[0] || { scene: 1, voice: scriptText };
+    const scene2 = script.scenes?.[1] || script.scenes?.[0] || scene1;
     const img1 = join(imagesDir, 'img_1.png');
     const img2 = join(imagesDir, 'img_2.png');
 
-    try { await generateSceneImage({ visual_prompt: prompt1, scene: 1 }, img1); console.log(`  Image 1: OK`); } catch (e) { console.log(`  Image 1: FAILED (${e.message.slice(0, 60)})`); }
-    try { await generateSceneImage({ visual_prompt: prompt2, scene: 2 }, img2); console.log(`  Image 2: OK`); } catch (e) { console.log(`  Image 2: FAILED (${e.message.slice(0, 60)})`); }
+    // Pass full script text for better Claude extraction
+    try { await generateSceneImage(scene1, img1, { scriptText }); console.log(`  Image 1: OK`); } catch (e) { console.log(`  Image 1: FAILED (${e.message.slice(0, 80)})`); }
+    try { await generateSceneImage(scene2, img2, { scriptText }); console.log(`  Image 2: OK`); } catch (e) { console.log(`  Image 2: FAILED (${e.message.slice(0, 80)})`); }
 
     // Step 4: Build video with pan/zoom (Ken Burns effect)
     console.log(`  [4/4] Building video with pan/zoom...`);
