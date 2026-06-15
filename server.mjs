@@ -262,47 +262,41 @@ async function runTextVoicePipeline(userId, scriptText, audioBuffer, messageId) 
     } catch {}
     console.log(`  Audio: ${audioDuration.toFixed(1)}s`);
 
-    // Step 2: Use text to generate scene breakdown + visual prompts
-    console.log(`  [2/4] Generating visual prompts from text...`);
-    const { zodiac, contentType } = parseMotherMessage(scriptText);
-    const script = await processMotherScript({
-      text: scriptText,
-      zodiacSign: zodiac,
-      contentType,
-      platform: 'tiktok',
-    });
-    writeFileSync(join(workDir, 'script.json'), JSON.stringify(script, null, 2));
+    // Step 2: Visual Planner — Claude plans scenes from script
+    console.log(`  [2/4] Planning visual scenes...`);
+    const { generateSceneImages } = await import('./scripts/agents/image-agent.mjs');
+    const { plan, images } = await generateSceneImages(scriptText, workDir, audioDuration);
+    const script = plan;
+    writeFileSync(join(workDir, 'script.json'), JSON.stringify(plan, null, 2));
 
-    // Step 3: Generate images from script via Claude JSON → OpenAI gpt-image-1
-    console.log(`  [3/4] Generating images (Claude extract → OpenAI generate)...`);
-    const { generateSceneImage } = await import('./scripts/agents/image-agent.mjs');
-    const imagesDir = join(workDir, 'images');
-    mkdirSync(imagesDir, { recursive: true });
+    // Step 3: Build video for each scene with pan/zoom
+    console.log(`  [3/4] Building video scenes with pan/zoom...`);
+    const sceneVideos = [];
 
-    const scene1 = script.scenes?.[0] || { scene: 1, voice: scriptText };
-    const scene2 = script.scenes?.[1] || script.scenes?.[0] || scene1;
-    const img1 = join(imagesDir, 'img_1.png');
-    const img2 = join(imagesDir, 'img_2.png');
+    if (images.length > 0) {
+      // Distribute audio duration across scenes based on duration hints
+      const totalHint = images.reduce((sum, img) => sum + (img.duration_hint || 5), 0);
 
-    // Pass full script text for better Claude extraction
-    try { await generateSceneImage(scene1, img1, { scriptText }); console.log(`  Image 1: OK`); } catch (e) { console.log(`  Image 1: FAILED (${e.message.slice(0, 80)})`); }
-    try { await generateSceneImage(scene2, img2, { scriptText }); console.log(`  Image 2: OK`); } catch (e) { console.log(`  Image 2: FAILED (${e.message.slice(0, 80)})`); }
+      for (let i = 0; i < images.length; i++) {
+        const img = images[i];
+        const dur = Math.max(3, Math.round(audioDuration * (img.duration_hint || 5) / totalHint));
+        const vidPath = join(workDir, `vid_${img.scene_no}.mp4`);
+        await generateSceneVideo({ scene: img.scene_no, duration: dur }, vidPath, { imagePath: img.path });
+        sceneVideos.push(vidPath);
+        console.log(`  Scene ${img.scene_no}: ${dur}s (${img.motion_hint || 'zoom'})`);
+      }
+    } else {
+      // Fallback: navy background for full duration
+      const vidPath = join(workDir, 'vid_fallback.mp4');
+      await generateSceneVideo({ scene: 1, duration: Math.ceil(audioDuration) }, vidPath, { imagePath: null });
+      sceneVideos.push(vidPath);
+      console.log(`  Fallback: navy bg ${Math.ceil(audioDuration)}s`);
+    }
 
-    // Step 4: Build video with pan/zoom (Ken Burns effect)
-    console.log(`  [4/4] Building video with pan/zoom...`);
-    const dur1 = Math.ceil(audioDuration / 2);
-    const dur2 = Math.ceil(audioDuration) - dur1;
-
-    const vid1 = join(workDir, 'vid1.mp4');
-    const vid2 = join(workDir, 'vid2.mp4');
-    await generateSceneVideo({ scene: 1, duration: dur1 }, vid1, { imagePath: existsSync(img1) ? img1 : null });
-    console.log(`  Video 1: ${dur1}s (pan/zoom)`);
-    await generateSceneVideo({ scene: 2, duration: dur2 }, vid2, { imagePath: existsSync(img2) ? img2 : null });
-    console.log(`  Video 2: ${dur2}s (pan/zoom)`);
-
-    // Concat + combine with mom's audio
+    // Step 4: Concat all scene videos + combine with audio
+    console.log(`  [4/4] Assembling final video...`);
     const concatPath = join(workDir, 'concat.txt');
-    writeFileSync(concatPath, `file '${vid1}'\nfile '${vid2}'`);
+    writeFileSync(concatPath, sceneVideos.map(v => `file '${v}'`).join('\n'));
     const merged = join(workDir, 'merged.mp4');
     await execP(ffmpegPath, ['-y', '-f', 'concat', '-safe', '0', '-i', concatPath, '-c', 'copy', merged], { timeout: 120000 });
 
