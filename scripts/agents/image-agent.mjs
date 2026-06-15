@@ -1,42 +1,60 @@
 /**
- * Image Agent — Visual Planner + Image Generator
+ * Image Agent — Visual Planner + Image Generator + Text Overlay
  *
  * Flow:
- *   1. Claude plans scenes from script (how many, what visual, motion hint)
- *   2. For each scene → build prompt → OpenAI gpt-image-1 generates image
- *   3. Returns array of { scene_no, path, motion_hint, duration_hint, text_overlay }
+ *   1. Claude plans scenes (visuals + Thai text separately)
+ *   2. For each scene → build prompt → OpenAI/FAL generates CLEAN image (no text)
+ *   3. Overlay real Thai text using FFmpeg drawtext with Kanit font
+ *   4. Returns array of { scene_no, path, motion_hint, duration_hint, text_overlay }
  */
 
 import { writeFileSync, mkdirSync, existsSync } from 'fs';
+import { execFile } from 'child_process';
+import { promisify } from 'util';
+import { dirname, join } from 'path';
+import { fileURLToPath } from 'url';
 import Anthropic from '@anthropic-ai/sdk';
+import ffmpegPath from 'ffmpeg-static';
+
+const execP = promisify(execFile);
+const __dirname = dirname(fileURLToPath(import.meta.url));
 
 const OPENAI_KEY = process.env.OPENAI_API_KEY;
 const ANTHROPIC_KEY = process.env.ANTHROPIC_API_KEY;
 const FAL_KEY = process.env.FAL_API_KEY;
 
+const FONT_DIR = join(__dirname, '..', '..', 'assets', 'fonts');
+const FONT_BOLD = join(FONT_DIR, 'Kanit-Bold.ttf');
+const FONT_MEDIUM = join(FONT_DIR, 'Kanit-Medium.ttf');
+const FONT_REGULAR = join(FONT_DIR, 'Kanit-Regular.ttf');
+
 // ─── Visual Planner (Claude) ────────────────────────────────────────────────────
 
-const PLANNER_SYSTEM = `You are a Thai astrology video visual planner.
+const PLANNER_SYSTEM = `You are a Thai astrology video creative planner.
 
-Your job is to convert a Thai fortune-telling voice transcript into visual prompts for social media video production.
+Your job is to convert a Thai fortune-telling voice transcript into:
+1. Image background prompts with NO text inside the image
+2. Thai text overlays that will be added later by the video system
 
 Output JSON only. Do not explain. Do not use markdown.
 
-The output will be used to generate images for a vertical short video such as TikTok, Reels, Shorts, Facebook, and LINE VOOM.
-
-Create a small set of image scenes that match the video content.
+Critical rule:
+Never ask the image model to generate Thai text inside the image.
+All Thai text must be placed in the "text_overlay" field only.
+The image_prompt must always include: "Do not include any text, letters, words, numbers, watermark, logo, Thai text, or English text."
 
 Rules:
-1. If the transcript is under 60 seconds, create 1-3 image scenes.
-2. If the transcript is 1-3 minutes, create 3-5 image scenes.
-3. If the transcript is over 3 minutes, create 5-8 image scenes.
-4. Each scene must be visually different but use the same premium astrology brand style.
-5. Do not create too many scenes because image generation has API cost.
-6. Each scene should work as a video background with zoom, pan, and text overlay.
-7. Keep visuals beautiful, mystical, premium, trustworthy, and suitable for Thai horoscope content.
-8. Avoid horror, scary dark magic, distorted faces, distorted hands, messy text, watermark, logo, and unreadable text.
-9. Thai text overlay must be short, maximum 8 Thai words.
-10. Do not include copyrighted characters, celebrities, sexual content, violence, or political content.
+1. If transcript is under 60 seconds, create 1-3 scenes.
+2. If transcript is 1-3 minutes, create 3-5 scenes.
+3. If transcript is over 3 minutes, create 5-8 scenes.
+4. Each image_prompt creates only the visual background, never text.
+5. Thai headline maximum 8 words.
+6. Thai subheadline maximum 12 words.
+7. Thai caption maximum 18 words.
+8. Avoid horror, scary, dark magic, violent, sexual, political, copyrighted visuals.
+9. Keep visuals premium, mystical, elegant, trustworthy, social-media ready.
+10. Leave empty space in upper and lower thirds for text overlay.
+11. Do not create too many scenes — image generation has API cost.
 
 Return this JSON schema:
 
@@ -44,9 +62,8 @@ Return this JSON schema:
   "video_summary": "",
   "fortune_topic": "",
   "recommended_scene_count": 0,
-  "estimated_image_cost_thb": 0,
-  "video_style": "premium Thai astrology social video",
   "aspect_ratio": "9:16",
+  "brand_style": "premium Thai astrology social video",
   "caption": "Thai social media caption for posting, under 150 chars",
   "hashtags": ["#ดูดวง", "#ดูดวงbyPrinnie", "...relevant tags"],
   "scenes": [
@@ -54,10 +71,15 @@ Return this JSON schema:
       "scene_no": 1,
       "duration_hint_seconds": 0,
       "purpose": "",
-      "image_prompt": "",
-      "text_overlay": "",
+      "image_prompt": "...visual description... Do not include any text, letters, words, numbers, watermark, logo, Thai text, or English text.",
+      "text_overlay": {
+        "headline": "short Thai headline, max 8 words",
+        "subheadline": "Thai subheadline, max 12 words",
+        "caption": "Thai caption, max 18 words"
+      },
       "motion_hint": "",
-      "negative_prompt": "low quality, blurry, distorted face, distorted hands, extra fingers, watermark, logo, messy text, unreadable text, horror, scary"
+      "layout_hint": "headline top center, subheadline middle, caption bottom",
+      "negative_prompt": "text, letters, words, numbers, watermark, logo, Thai text, English text, unreadable typography, fake letters, distorted zodiac signs, distorted animals, scary face, horror, dark magic, low quality, blurry, messy composition"
     }
   ]
 }`;
@@ -85,7 +107,6 @@ export async function planScenes(scriptText, audioDuration) {
 
   const plan = JSON.parse(jsonMatch[0]);
 
-  // Validate
   if (!plan.scenes || !Array.isArray(plan.scenes) || plan.scenes.length === 0) {
     throw new Error('Visual planner returned no scenes');
   }
@@ -93,29 +114,41 @@ export async function planScenes(scriptText, audioDuration) {
   return plan;
 }
 
-// ─── Image Generation ───────────────────────────────────────────────────────────
+// ─── Image Prompt Builder ───────────────────────────────────────────────────────
 
 function buildFinalPrompt(scene) {
-  return `Create a premium vertical 9:16 image for a Thai astrology social media video.
+  const negativePrompt = scene.negative_prompt ||
+    'text, letters, words, numbers, watermark, logo, Thai text, English text, unreadable typography, fake letters, distorted zodiac signs, distorted animals, scary face, horror, dark magic, low quality, blurry, messy composition';
+
+  return `Create a premium vertical 9:16 background image for a Thai astrology social media video.
+
+IMPORTANT:
+Do not include any text, letters, words, numbers, captions, watermark, logo, Thai text, English text, or readable typography inside the image.
 
 Scene purpose:
 ${scene.purpose || 'background for fortune-telling content'}
 
-Visual prompt:
-${scene.image_prompt || 'premium mystical astrology scene with golden light and celestial elements'}
-
-Text overlay:
-${scene.text_overlay ? `Add short Thai text: "${scene.text_overlay}"` : 'No text on image.'}
+Visual:
+${scene.image_prompt || 'A luxurious mystical astrology background with glowing golden zodiac energy, soft stars, moonlight, celestial ornaments, sacred geometry. Deep navy blue and royal purple with golden glow.'}
 
 Composition:
-Vertical mobile video background, clean center composition, cinematic lighting, enough empty space for captions, suitable for slow zoom and pan motion.
+Vertical mobile video background.
+Keep the center visually beautiful but not too crowded.
+Leave clean empty space in the upper third and lower third for text overlay.
+No face close-up. No strange animals. No horror. No dark magic. No messy symbols.
+Safe margins for social media UI.
 
 Brand style:
-Premium Thai astrology, mystical, beautiful, elegant, trustworthy, social media ready, high detail, deep navy blue, gold, soft white, violet glow.
+Premium Thai astrology, mystical, elegant, trustworthy, cinematic, high detail, deep navy blue, royal purple, gold, soft white, warm golden glow.
+
+Lighting:
+Soft cinematic glow, golden particles, subtle stars, elegant spiritual atmosphere.
 
 Avoid:
-${scene.negative_prompt || 'low quality, blurry, distorted face, distorted hands, extra fingers, watermark, logo, messy text, unreadable text, horror, scary'}`;
+${negativePrompt}`.trim();
 }
+
+// ─── Image Generation ───────────────────────────────────────────────────────────
 
 async function generateWithOpenAI(prompt, outputPath) {
   if (!OPENAI_KEY) throw new Error('Missing OPENAI_API_KEY');
@@ -175,39 +208,112 @@ async function generateImage(prompt, outputPath) {
   throw new Error('No image API key (OPENAI_API_KEY or FAL_API_KEY)');
 }
 
+// ─── Thai Text Overlay (FFmpeg drawtext) ────────────────────────────────────────
+
+function escapeDrawtext(text) {
+  return text.replace(/[\\':]/g, c => '\\' + c);
+}
+
+export async function overlayThaiText(inputPath, outputPath, textOverlay) {
+  if (!textOverlay || typeof textOverlay === 'string') return inputPath;
+
+  const { headline, subheadline, caption } = textOverlay;
+  if (!headline && !subheadline && !caption) return inputPath;
+
+  const hasFonts = existsSync(FONT_BOLD);
+  if (!hasFonts) {
+    console.log('    No Kanit font found — skipping text overlay');
+    return inputPath;
+  }
+
+  const filters = [];
+
+  if (headline) {
+    filters.push(
+      `drawtext=fontfile='${FONT_BOLD}':text='${escapeDrawtext(headline)}'` +
+      `:fontsize=64:fontcolor=white:borderw=3:bordercolor=black@0.6` +
+      `:shadowcolor=black@0.5:shadowx=2:shadowy=2` +
+      `:x=(w-text_w)/2:y=200`
+    );
+  }
+
+  if (subheadline) {
+    filters.push(
+      `drawtext=fontfile='${FONT_MEDIUM}':text='${escapeDrawtext(subheadline)}'` +
+      `:fontsize=44:fontcolor=#E8C77A:borderw=2:bordercolor=black@0.5` +
+      `:shadowcolor=black@0.4:shadowx=1:shadowy=1` +
+      `:x=(w-text_w)/2:y=h/2-22`
+    );
+  }
+
+  if (caption) {
+    filters.push(
+      `drawtext=fontfile='${FONT_REGULAR}':text='${escapeDrawtext(caption)}'` +
+      `:fontsize=36:fontcolor=white@0.95:borderw=2:bordercolor=black@0.5` +
+      `:shadowcolor=black@0.4:shadowx=1:shadowy=1` +
+      `:x=(w-text_w)/2:y=h-280`
+    );
+  }
+
+  const filterStr = filters.join(',');
+
+  await execP(ffmpegPath, [
+    '-y', '-i', inputPath,
+    '-vf', filterStr,
+    '-q:v', '2',
+    outputPath,
+  ], { timeout: 30000 });
+
+  return outputPath;
+}
+
 // ─── Public: Plan + Generate All ────────────────────────────────────────────────
 
 export async function generateSceneImages(scriptText, workDir, audioDuration) {
   const imagesDir = `${workDir}/images`;
   mkdirSync(imagesDir, { recursive: true });
 
-  // Step 1: Claude plans scenes
   console.log(`    Planning scenes...`);
   const plan = await planScenes(scriptText, audioDuration);
-  console.log(`    Plan: ${plan.scenes.length} scenes, topic: ${plan.fortune_topic}, ~${plan.estimated_image_cost_thb || '?'} THB`);
+  console.log(`    Plan: ${plan.scenes.length} scenes, topic: ${plan.fortune_topic}`);
 
   writeFileSync(`${workDir}/visual-plan.json`, JSON.stringify(plan, null, 2));
 
-  // Step 2: Generate image for each scene
   const results = [];
   for (const scene of plan.scenes) {
-    const filename = `scene_${scene.scene_no}.png`;
-    const outputPath = `${imagesDir}/${filename}`;
+    const rawFile = `scene_${scene.scene_no}_raw.png`;
+    const finalFile = `scene_${scene.scene_no}.png`;
+    const rawPath = `${imagesDir}/${rawFile}`;
+    const finalPath = `${imagesDir}/${finalFile}`;
     const prompt = buildFinalPrompt(scene);
 
     console.log(`    Scene ${scene.scene_no}: ${scene.purpose?.slice(0, 50) || 'generating'}...`);
 
     try {
-      const engine = await generateImage(prompt, outputPath);
+      const engine = await generateImage(prompt, rawPath);
+      console.log(`    Scene ${scene.scene_no}: image OK (${engine})`);
+
+      // Overlay Thai text with real font
+      let usePath = rawPath;
+      if (scene.text_overlay && typeof scene.text_overlay === 'object') {
+        try {
+          await overlayThaiText(rawPath, finalPath, scene.text_overlay);
+          usePath = existsSync(finalPath) ? finalPath : rawPath;
+          if (usePath === finalPath) console.log(`    Scene ${scene.scene_no}: text overlay OK`);
+        } catch (e) {
+          console.log(`    Scene ${scene.scene_no}: text overlay failed (${e.message.slice(0, 60)})`);
+          usePath = rawPath;
+        }
+      }
+
       results.push({
         scene_no: scene.scene_no,
-        path: outputPath,
+        path: usePath,
         duration_hint: scene.duration_hint_seconds || 5,
         motion_hint: scene.motion_hint || 'slow zoom in',
-        text_overlay: scene.text_overlay || '',
+        text_overlay: scene.text_overlay || {},
         engine,
       });
-      console.log(`    Scene ${scene.scene_no}: OK (${engine})`);
     } catch (e) {
       console.log(`    Scene ${scene.scene_no}: FAILED (${e.message.slice(0, 60)})`);
     }
@@ -222,9 +328,9 @@ export async function generateSceneImage(scene, outputPath, options = {}) {
   const scriptText = options.scriptText || scene.voice || scene.visual_prompt || '';
   const prompt = buildFinalPrompt({
     purpose: 'background for astrology content',
-    image_prompt: scene.visual_prompt || `Premium astrology artwork matching: ${scriptText.slice(0, 200)}`,
-    text_overlay: '',
-    negative_prompt: 'low quality, blurry, distorted face, distorted hands, extra fingers, watermark, logo, horror, scary',
+    image_prompt: `Premium astrology artwork matching: ${scriptText.slice(0, 200)}. Do not include any text, letters, words, numbers, watermark, logo, Thai text, or English text.`,
+    text_overlay: {},
+    negative_prompt: 'text, letters, words, numbers, watermark, logo, Thai text, English text, unreadable typography, fake letters, distorted zodiac signs, horror, scary, low quality, blurry',
   });
   await generateImage(prompt, outputPath);
   return outputPath;
