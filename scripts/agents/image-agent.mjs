@@ -1,50 +1,63 @@
 /**
- * Image Agent — generates scene images using FAL.ai FLUX
+ * Image Agent — generates scene images for video clips
  *
- * Takes visual_prompt from each scene and generates a 9:16 image.
+ * Tries OpenAI (gpt-image-1) first for best quality,
+ * falls back to FAL.ai FLUX if OpenAI unavailable.
+ *
  * Images are saved to {workDir}/images/scene_{n}.png
  */
 
 import { writeFileSync, mkdirSync } from 'fs';
 
+const OPENAI_KEY = process.env.OPENAI_API_KEY;
 const FAL_KEY = process.env.FAL_API_KEY;
 const FAL_MODEL = process.env.FAL_MODEL || 'fal-ai/flux/schnell';
 
-const BRAND_SUFFIX = ', luminous glowing 3D render floating in dark cosmic void, golden inner light radiating outward, sacred mandala geometry with purple and gold energy rays behind the subject, golden sparkle particles floating in air, volumetric god rays from above, dark reflective water surface below with golden reflections, deep dark navy cosmic background with twinkling stars, photorealistic 3D render, cinematic volumetric lighting, lens flare, ultra detailed 8K quality, spiritual luxury aesthetic, Thai lotus patterns and ornate gold filigree details, portrait composition, NO text, NO letters, NO watermarks, NO words';
+const CONTEXT = `I need a beautiful background image for a short-form astrology video clip (TikTok/Reels). The image will have a slow Ken Burns pan/zoom effect, so it should look good when slightly cropped. Style: photorealistic, naturally beautiful like National Geographic or Apple wallpaper. NOT fantasy, NOT overly dramatic, NOT mystical symbols. Vertical 9:16 portrait format. No text, no letters, no watermarks, no people, no faces, no hands.`;
 
-export async function generateSceneImage(scene, outputPath) {
-  if (!FAL_KEY) throw new Error('Missing FAL_API_KEY');
+async function generateWithOpenAI(prompt, outputPath) {
+  const fullPrompt = `${CONTEXT}\n\nScene description: ${prompt}`;
+  const res = await fetch('https://api.openai.com/v1/images/generations', {
+    method: 'POST',
+    headers: { 'Authorization': `Bearer ${OPENAI_KEY}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ model: 'gpt-image-1', prompt: fullPrompt, n: 1, size: '1024x1792', quality: 'medium' }),
+  });
+  if (!res.ok) throw new Error(`OpenAI ${res.status}: ${(await res.text()).slice(0, 200)}`);
+  const data = await res.json();
+  const url = data.data?.[0]?.url;
+  if (!url) throw new Error('No image URL');
+  const img = await fetch(url);
+  writeFileSync(outputPath, Buffer.from(await img.arrayBuffer()));
+}
 
-  const prompt = (scene.visual_prompt || `mystical astrology scene ${scene.caption_text || ''}`) + BRAND_SUFFIX;
-
+async function generateWithFal(prompt, outputPath) {
+  const fullPrompt = `${prompt}, vertical 9:16, photorealistic landscape photography, beautiful natural scene, high quality, no text, no people`;
   const res = await fetch(`https://fal.run/${FAL_MODEL}`, {
     method: 'POST',
-    headers: {
-      'Authorization': `Key ${FAL_KEY}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      prompt,
-      image_size: 'portrait_16_9',
-      num_images: 1,
-    }),
+    headers: { 'Authorization': `Key ${FAL_KEY}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ prompt: fullPrompt, image_size: 'portrait_16_9', num_images: 1 }),
   });
-
-  if (!res.ok) {
-    const err = await res.text();
-    throw new Error(`FAL.ai ${res.status}: ${err.slice(0, 200)}`);
-  }
-
+  if (!res.ok) throw new Error(`FAL ${res.status}: ${(await res.text()).slice(0, 200)}`);
   const data = await res.json();
-  const imageUrl = data.images?.[0]?.url;
-  if (!imageUrl) throw new Error('No image URL in FAL response');
+  const url = data.images?.[0]?.url;
+  if (!url) throw new Error('No image URL');
+  const img = await fetch(url);
+  writeFileSync(outputPath, Buffer.from(await img.arrayBuffer()));
+}
 
-  const imgRes = await fetch(imageUrl);
-  if (!imgRes.ok) throw new Error(`Failed to download image: ${imgRes.status}`);
+export async function generateSceneImage(scene, outputPath) {
+  const prompt = scene.visual_prompt || `beautiful natural landscape for astrology content about ${scene.caption_text || 'zodiac reading'}`;
 
-  const buffer = Buffer.from(await imgRes.arrayBuffer());
-  writeFileSync(outputPath, buffer);
-  return outputPath;
+  if (OPENAI_KEY) {
+    try { await generateWithOpenAI(prompt, outputPath); return outputPath; } catch (e) {
+      console.log(`    OpenAI image failed: ${e.message.slice(0, 80)}`);
+    }
+  }
+  if (FAL_KEY) {
+    await generateWithFal(prompt, outputPath);
+    return outputPath;
+  }
+  throw new Error('No image API key (OPENAI_API_KEY or FAL_API_KEY)');
 }
 
 const MAX_IMAGES = parseInt(process.env.MAX_IMAGES || '2');

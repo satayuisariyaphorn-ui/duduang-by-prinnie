@@ -273,12 +273,19 @@ async function runTextVoicePipeline(userId, scriptText, audioBuffer, messageId) 
     });
     writeFileSync(join(workDir, 'script.json'), JSON.stringify(script, null, 2));
 
-    // Step 3: Pick background images (shuffled stock art — different every clip)
-    console.log(`  [3/4] Selecting background images...`);
-    const bgDir = join(__dirname, 'assets', 'backgrounds');
-    const [img1, img2] = pickBackgrounds(bgDir, 2);
-    console.log(`  BG 1: ${img1}`);
-    console.log(`  BG 2: ${img2}`);
+    // Step 3: Generate images matching the script content
+    console.log(`  [3/4] Generating images from script...`);
+    const { generateSceneImage } = await import('./scripts/agents/image-agent.mjs');
+    const imagesDir = join(workDir, 'images');
+    mkdirSync(imagesDir, { recursive: true });
+
+    const prompt1 = script.scenes?.[0]?.visual_prompt || `beautiful natural scene for ${contentType || 'astrology'} content`;
+    const prompt2 = script.scenes?.[1]?.visual_prompt || script.scenes?.[0]?.visual_prompt || prompt1;
+    const img1 = join(imagesDir, 'img_1.png');
+    const img2 = join(imagesDir, 'img_2.png');
+
+    try { await generateSceneImage({ visual_prompt: prompt1, scene: 1 }, img1); console.log(`  Image 1: OK`); } catch (e) { console.log(`  Image 1: FAILED (${e.message.slice(0, 60)})`); }
+    try { await generateSceneImage({ visual_prompt: prompt2, scene: 2 }, img2); console.log(`  Image 2: OK`); } catch (e) { console.log(`  Image 2: FAILED (${e.message.slice(0, 60)})`); }
 
     // Step 4: Build video with pan/zoom (Ken Burns effect)
     console.log(`  [4/4] Building video with pan/zoom...`);
@@ -287,9 +294,9 @@ async function runTextVoicePipeline(userId, scriptText, audioBuffer, messageId) 
 
     const vid1 = join(workDir, 'vid1.mp4');
     const vid2 = join(workDir, 'vid2.mp4');
-    await generateSceneVideo({ scene: 1, duration: dur1 }, vid1, { imagePath: img1 });
+    await generateSceneVideo({ scene: 1, duration: dur1 }, vid1, { imagePath: existsSync(img1) ? img1 : null });
     console.log(`  Video 1: ${dur1}s (pan/zoom)`);
-    await generateSceneVideo({ scene: 2, duration: dur2 }, vid2, { imagePath: img2 });
+    await generateSceneVideo({ scene: 2, duration: dur2 }, vid2, { imagePath: existsSync(img2) ? img2 : null });
     console.log(`  Video 2: ${dur2}s (pan/zoom)`);
 
     // Concat + combine with mom's audio
