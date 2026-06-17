@@ -262,55 +262,90 @@ async function runTextVoicePipeline(userId, scriptText, audioBuffer, messageId) 
     } catch {}
     console.log(`  Audio: ${audioDuration.toFixed(1)}s`);
 
-    // Step 2: Visual Planner — Claude plans scenes from script
-    console.log(`  [2/4] Planning visual scenes...`);
-    const { generateSceneImages } = await import('./scripts/agents/image-agent.mjs');
-    const { plan, images } = await generateSceneImages(scriptText, workDir, audioDuration);
-    const script = plan;
-    writeFileSync(join(workDir, 'script.json'), JSON.stringify(plan, null, 2));
+    // Step 2: Pick & prepare stock video backgrounds
+    console.log(`  [2/3] Picking stock videos...`);
+    const STOCK_DIR = join(__dirname, 'assets', 'stock-videos');
+    let stockFiles = [];
+    try {
+      stockFiles = readdirSync(STOCK_DIR).filter(f => /\.mp4$/i.test(f));
+    } catch {}
 
-    // Step 3: Build video for each scene with pan/zoom
-    console.log(`  [3/4] Building video scenes with pan/zoom...`);
-    const sceneVideos = [];
+    const script = { caption: '', hashtags: ['#ดูดวง', '#ดูดวงbyPrinnie'] };
 
-    if (images.length > 0) {
-      // Distribute audio duration across scenes based on duration hints
-      const totalHint = images.reduce((sum, img) => sum + (img.duration_hint || 5), 0);
+    if (stockFiles.length > 0) {
+      // Shuffle stock videos
+      const shuffled = stockFiles.sort(() => Math.random() - 0.5);
 
-      for (let i = 0; i < images.length; i++) {
-        const img = images[i];
-        const dur = Math.max(3, Math.round(audioDuration * (img.duration_hint || 5) / totalHint));
-        const vidPath = join(workDir, `vid_${img.scene_no}.mp4`);
-        await generateSceneVideo({ scene: img.scene_no, duration: dur }, vidPath, { imagePath: img.path });
-        sceneVideos.push(vidPath);
-        console.log(`  Scene ${img.scene_no}: ${dur}s (${img.motion_hint || 'zoom'})`);
+      // Each stock clip is ~5s. Pick enough to cover audio duration, looping if needed.
+      const needed = Math.ceil(audioDuration / 5);
+      const picked = [];
+      for (let i = 0; i < needed; i++) {
+        picked.push(shuffled[i % shuffled.length]);
       }
+
+      // Scale each to 1080x1920 and normalize for concat
+      const scaledVids = [];
+      for (let i = 0; i < picked.length; i++) {
+        const src = join(STOCK_DIR, picked[i]);
+        const scaled = join(workDir, `stock_${i}.mp4`);
+        await execP(ffmpegPath, [
+          '-y', '-i', src,
+          '-vf', 'scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,setsar=1',
+          '-c:v', 'libx264', '-preset', 'fast', '-crf', '23',
+          '-pix_fmt', 'yuv420p', '-an',
+          '-r', '30',
+          scaled,
+        ], { timeout: 60000 });
+        scaledVids.push(scaled);
+      }
+      console.log(`  Picked ${picked.length} stock clips for ${audioDuration.toFixed(0)}s audio`);
+
+      // Concat all stock clips
+      const concatPath = join(workDir, 'concat.txt');
+      writeFileSync(concatPath, scaledVids.map(v => `file '${v}'`).join('\n'));
+      const merged = join(workDir, 'merged.mp4');
+      await execP(ffmpegPath, ['-y', '-f', 'concat', '-safe', '0', '-i', concatPath, '-c', 'copy', merged], { timeout: 120000 });
+
+      // Combine with mom's audio
+      console.log(`  [3/3] Combining with audio...`);
+      const finalPath = join(workDir, `${jobId}_final.mp4`);
+      await execP(ffmpegPath, [
+        '-y', '-i', merged, '-i', audioPath,
+        '-map', '0:v', '-map', '1:a',
+        '-c:v', 'copy', '-c:a', 'aac', '-b:a', '128k',
+        '-shortest', finalPath,
+      ], { timeout: 180000 });
+
+      var _finalPath = finalPath;
     } else {
-      // Fallback: navy background for full duration
-      const vidPath = join(workDir, 'vid_fallback.mp4');
-      await generateSceneVideo({ scene: 1, duration: Math.ceil(audioDuration) }, vidPath, { imagePath: null });
-      sceneVideos.push(vidPath);
-      console.log(`  Fallback: navy bg ${Math.ceil(audioDuration)}s`);
+      // Fallback: navy bg if no stock videos
+      console.log(`  No stock videos found, using navy bg`);
+      const navyVid = join(workDir, 'navy.mp4');
+      await execP(ffmpegPath, [
+        '-y', '-f', 'lavfi', '-i', `color=c=0x0B1026:s=1080x1920:d=${Math.ceil(audioDuration)}:r=30`,
+        '-c:v', 'libx264', '-pix_fmt', 'yuv420p', navyVid,
+      ], { timeout: 60000 });
+
+      console.log(`  [3/3] Combining with audio...`);
+      const finalPath = join(workDir, `${jobId}_final.mp4`);
+      await execP(ffmpegPath, [
+        '-y', '-i', navyVid, '-i', audioPath,
+        '-map', '0:v', '-map', '1:a',
+        '-c:v', 'libx264', '-c:a', 'aac', '-b:a', '128k',
+        '-shortest', '-pix_fmt', 'yuv420p', finalPath,
+      ], { timeout: 180000 });
+
+      var _finalPath = finalPath;
     }
 
-    // Step 4: Concat all scene videos + combine with audio
-    console.log(`  [4/4] Assembling final video...`);
-    const concatPath = join(workDir, 'concat.txt');
-    writeFileSync(concatPath, sceneVideos.map(v => `file '${v}'`).join('\n'));
-    const merged = join(workDir, 'merged.mp4');
-    await execP(ffmpegPath, ['-y', '-f', 'concat', '-safe', '0', '-i', concatPath, '-c', 'copy', merged], { timeout: 120000 });
-
-    const finalPath = join(workDir, `${jobId}_final.mp4`);
-    await execP(ffmpegPath, ['-y', '-i', merged, '-i', audioPath, '-map', '0:v', '-map', '1:a', '-c:v', 'libx264', '-c:a', 'aac', '-b:a', '128k', '-shortest', '-pix_fmt', 'yuv420p', finalPath], { timeout: 180000 });
-
-    console.log(`  Final: ${finalPath}`);
+    console.log(`  Final: ${_finalPath}`);
     jobInfo.status = 'ready';
-    jobInfo.finalVideo = finalPath;
+    jobInfo.finalVideo = _finalPath;
     jobInfo.script = script;
     jobInfo.completed_at = new Date().toISOString();
     writeFileSync(join(JOBS_DIR, `${jobId}.json`), JSON.stringify(jobInfo, null, 2));
 
-    return { success: true, jobId, script, finalPath };
+    return { success: true, jobId, script, finalPath: _finalPath };
   } catch (err) {
     console.error(`  Pipeline error: ${err.message}`);
     jobInfo.status = 'failed';
