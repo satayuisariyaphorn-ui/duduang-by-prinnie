@@ -1,0 +1,11 @@
+.git
+.env
+.env.*
+node_modules
+jobs
+scripts/pipeline-output
+content-output
+pipeline-output
+scripts/reports
+*.log
+tests
