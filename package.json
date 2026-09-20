@@ -14,10 +14,11 @@
     "review": "node scripts/review.mjs",
     "review:open": "node scripts/review.mjs --open",
     "bot": "node --env-file=.env server.mjs",
-    "dev": "node --env-file=.env server.mjs"
+    "dev": "node --env-file=.env server.mjs",
+    "test:security": "node --test tests/security.test.mjs"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.80.0",
+    "@anthropic-ai/sdk": "0.127.0",
     "@fal-ai/client": "^1.10.1",
     "@line/bot-sdk": "^11.0.1",
     "express": "^5.2.1",

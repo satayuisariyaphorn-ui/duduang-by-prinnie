@@ -21,7 +21,7 @@
  */
 
 import express from 'express';
-import crypto from 'crypto';
+import { requireLineSignature, requireAdminToken, authorizedLineEvent, safeJobId, publicClip } from './scripts/security.mjs';
 import { writeFileSync, mkdirSync, readFileSync, existsSync, readdirSync } from 'fs';
 import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
@@ -44,7 +44,13 @@ const BASE_URL = process.env.RAILWAY_PUBLIC_DOMAIN
   ? `https://${process.env.RAILWAY_PUBLIC_DOMAIN}`
   : `http://localhost:${PORT}`;
 
-app.use('/clips', express.static(join(__dirname, 'scripts', 'pipeline-output')));
+app.disable('x-powered-by');
+app.get('/clips/:jobId/:filename', (req, res) => {
+  const { jobId, filename } = req.params;
+  if (!publicClip(jobId, filename)) return res.sendStatus(404);
+  res.set('X-Content-Type-Options', 'nosniff');
+  res.sendFile(filename, { root: join(OUTPUT_BASE, jobId), dotfiles: 'deny' });
+});
 
 const LINE_SECRET = process.env.LINE_CHANNEL_SECRET;
 function resolveLineToken() {
@@ -60,18 +66,12 @@ function resolveLineToken() {
   return raw;
 }
 const LINE_TOKEN = resolveLineToken();
-const ADMIN_USER_IDS = (process.env.LINE_ADMIN_USERS || '').split(',').filter(Boolean);
+const ADMIN_USER_IDS = (process.env.LINE_ADMIN_USERS || '').split(',').map(id => id.trim()).filter(Boolean);
 
 // Store pending text per user — when mom sends text first, then voice
 const pendingText = new Map();
 
 // ─── LINE Signature Verification ────────────────────────────────────────────────
-
-function verifySignature(body, signature) {
-  if (!LINE_SECRET) return true; // dev mode
-  const hash = crypto.createHmac('sha256', LINE_SECRET).update(body).digest('base64');
-  return hash === signature;
-}
 
 // ─── LINE Reply ─────────────────────────────────────────────────────────────────
 
@@ -440,7 +440,7 @@ async function runMomPipeline(userId, scriptText, zodiac, contentType) {
 
 // ─── Webhook Handler ────────────────────────────────────────────────────────────
 
-app.post('/webhook', express.raw({ type: '*/*' }), async (req, res) => {
+app.post('/webhook', express.raw({ type: '*/*', limit: '100kb' }), requireLineSignature(LINE_SECRET), async (req, res) => {
   let bodyStr;
   try {
     bodyStr = typeof req.body === 'string' ? req.body : Buffer.isBuffer(req.body) ? req.body.toString('utf-8') : JSON.stringify(req.body);
@@ -450,15 +450,6 @@ app.post('/webhook', express.raw({ type: '*/*' }), async (req, res) => {
   }
 
   console.log(`\n[WEBHOOK] Received ${bodyStr.length} bytes`);
-
-  const signature = req.headers['x-line-signature'];
-  if (LINE_SECRET && signature) {
-    const valid = verifySignature(bodyStr, signature);
-    console.log(`[WEBHOOK] Signature: ${valid ? 'OK' : 'INVALID'}`);
-    if (!valid) {
-      return res.status(401).send('Invalid signature');
-    }
-  }
 
   res.status(200).send('OK');
 
@@ -473,7 +464,8 @@ app.post('/webhook', express.raw({ type: '*/*' }), async (req, res) => {
 
   for (const event of events) {
    try {
-    if (event.type !== 'message') continue;
+    // Authorize every message type before downloading audio, replying, or starting work.
+    if (!authorizedLineEvent(event, ADMIN_USER_IDS)) continue;
     const msgType = event.message?.type;
 
     // Handle audio/voice messages from mom
@@ -599,19 +591,6 @@ app.post('/webhook', express.raw({ type: '*/*' }), async (req, res) => {
     const text = event.message.text.trim();
     const replyToken = event.replyToken;
 
-    console.log(`[MSG] User: ${userId}`);
-    console.log(`[MSG] Text: ${text.slice(0, 80)}`);
-    console.log(`[MSG] ReplyToken: ${replyToken?.slice(0, 20)}...`);
-
-    // Check if user is authorized (if admin list is set)
-    if (ADMIN_USER_IDS.length > 0 && !ADMIN_USER_IDS.includes(userId)) {
-      await replyMessage(replyToken, [{
-        type: 'text',
-        text: 'ขออภัยค่ะ ระบบนี้สำหรับทีม Prinnie เท่านั้น',
-      }]);
-      continue;
-    }
-
     // Command: /status
     if (text === '/status' || text === '/สถานะ') {
       const jobFiles = existsSync(JOBS_DIR) ?
@@ -678,63 +657,19 @@ app.post('/webhook', express.raw({ type: '*/*' }), async (req, res) => {
   }
 });
 
-// ─── Debug endpoint ─────────────────────────────────────────────────────────────
-
-app.get('/debug/test-reply', async (req, res) => {
-  const testUserId = req.query.uid;
-  if (!testUserId) {
-    return res.json({ error: 'Add ?uid=USER_ID to test push message' });
-  }
-  try {
-    await pushMessage(testUserId, [{ type: 'text', text: 'ทดสอบ Bot สำเร็จค่ะ!' }]);
-    res.json({ status: 'sent', to: testUserId });
-  } catch (err) {
-    res.json({ status: 'error', message: err.message });
-  }
-});
-
-app.get('/debug/test-anthropic', async (req, res) => {
-  try {
-    const resp = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-api-key': process.env.ANTHROPIC_API_KEY,
-        'anthropic-version': '2023-06-01',
-      },
-      body: JSON.stringify({
-        model: 'claude-haiku-4-5-20251001',
-        max_tokens: 5,
-        messages: [{ role: 'user', content: 'hi' }],
-      }),
-    });
-    const data = await resp.text();
-    res.json({ status: resp.status, response: data.slice(0, 200) });
-  } catch (err) {
-    res.json({ status: 'error', message: err.message });
-  }
-});
-
-app.get('/debug/env', (req, res) => {
-  res.json({
-    anthropic: !!process.env.ANTHROPIC_API_KEY,
-    elevenlabs: !!process.env.ELEVENLABS_API_KEY,
-    elevenlabsVoice: process.env.ELEVENLABS_VOICE_ID || 'default',
-    fal: !!process.env.FAL_API_KEY,
-    minimaxVoice: process.env.MINIMAX_VOICE_ID || 'default (Voiceeffe72d71780906562)',
-    lineSecret: !!LINE_SECRET,
-    lineToken: LINE_TOKEN?.length || 0,
-    railwayDomain: process.env.RAILWAY_PUBLIC_DOMAIN || 'not set',
-  });
-});
+// Diagnostic endpoints are disabled on all deployments.
+app.use('/debug', (_req, res) => res.sendStatus(404));
 
 // ─── Dev Mode: test via HTTP POST ───────────────────────────────────────────────
 
-app.post('/api/generate', express.json(), async (req, res) => {
-  const { text, zodiac, contentType } = req.body;
+app.post('/api/generate', requireAdminToken(process.env.ADMIN_API_TOKEN), express.json({ limit: '100kb' }), async (req, res) => {
+  const { text, zodiac, contentType } = req.body || {};
+  if ([zodiac, contentType].some(value => value !== undefined && !safeJobId(value))) {
+    return res.status(400).json({ error: 'Invalid generation option' });
+  }
 
-  if (!text || text.length < 20) {
-    return res.status(400).json({ error: 'Script text too short (min 20 chars)' });
+  if (typeof text !== 'string' || text.length < 20 || text.length > 20000) {
+    return res.status(400).json({ error: 'Script text must contain 20 to 20000 characters' });
   }
 
   const parsed = parseMotherMessage(text);
@@ -759,6 +694,7 @@ app.post('/api/generate', express.json(), async (req, res) => {
 // Download endpoint — forces browser download
 app.get('/download/:jobId', (req, res) => {
   const jobId = req.params.jobId;
+  if (!safeJobId(jobId)) return res.sendStatus(404);
   const filePath = join(OUTPUT_BASE, jobId, `${jobId}_final.mp4`);
   if (!existsSync(filePath)) return res.status(404).json({ error: 'Clip not found' });
   res.download(filePath, `${jobId}.mp4`);
@@ -772,7 +708,7 @@ app.get('/', (req, res) => {
     status: 'running',
     endpoints: {
       webhook: 'POST /webhook (LINE Bot)',
-      generate: 'POST /api/generate (dev mode)',
+      generate: 'POST /api/generate (owner token required)',
     },
   });
 });
